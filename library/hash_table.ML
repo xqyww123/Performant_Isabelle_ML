@@ -40,6 +40,10 @@ signature HASH_TABLE = sig
   val forall: (key * 'a -> bool) -> 'a table -> bool
   val map: (key -> 'a -> 'b) -> 'a table -> 'b table
   val make: (key * 'a) list -> 'a table
+
+  type set
+  val empty_set: int -> set
+  val make_set: key list -> set
 end
 
 functor Hash_Table(Key: HASH_KEY): HASH_TABLE = struct
@@ -225,6 +229,14 @@ fun make pairs =
     List.app (fn (k, v) => update tab (k, v)) pairs;
     tab
   end
+
+type set = unit table
+
+fun empty_set hint = empty hint
+
+fun make_set ks =
+  let val tab = empty (length ks)
+  in List.app (fn k => update tab (k, ())) ks; tab end
 
 end
 
