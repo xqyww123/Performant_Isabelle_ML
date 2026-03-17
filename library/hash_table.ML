@@ -240,19 +240,21 @@ fun make_set ks =
 
 end
 
+signature HASHERS = sig
+  val int_key : int -> word
+  val string_key : string -> word
+  val position_key : Position.T -> word
+end
+
+structure Hashers : HASHERS = struct
+
 (* Integer hash: Knuth multiplicative hash *)
-val hash_int_multiplier : word = 0w2654435761
+val int_multiplier : word = 0w2654435761
 
-fun hash_int (k: int) : word = Word.* (Word.fromInt k, hash_int_multiplier)
-
-structure Inthashtab = Hash_Table(
-  type key = int
-  val eq = (op =) : int * int -> bool
-  val hash = hash_int
-)
+fun int_key (k: int) : word = Word.* (Word.fromInt k, int_multiplier)
 
 (* String hash: FNV-1a folded to native word *)
-fun hash_string (s: string) : word =
+fun string_key (s: string) : word =
   let
     val bytes = Byte.stringToBytes s
     val len = Word8Vector.length bytes
@@ -266,8 +268,29 @@ fun hash_string (s: string) : word =
     Word.fromLargeWord (Word64.toLargeWord (!h))
   end
 
+(* Position hash: combine offset and file *)
+fun position_key (pos: Position.T) : word =
+  let
+    val offset = the_default 0 (Position.offset_of pos)
+    val file = the_default "" (Position.file_of pos)
+  in
+    Word.xorb (int_key offset, string_key file)
+  end
+
+end
+
+(* Backward compatibility *)
+val hash_int = Hashers.int_key
+val hash_string = Hashers.string_key
+
+structure Inthashtab = Hash_Table(
+  type key = int
+  val eq = (op =) : int * int -> bool
+  val hash = Hashers.int_key
+)
+
 structure Strhashtab = Hash_Table(
   type key = string
   val eq = (op =) : string * string -> bool
-  val hash = hash_string
+  val hash = Hashers.string_key
 )
