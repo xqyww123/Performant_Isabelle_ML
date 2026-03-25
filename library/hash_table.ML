@@ -308,3 +308,9 @@ structure Strhashtab = Hash_Table(
   val eq = (op =) : string * string -> bool
   val hash = Hashers.string
 )
+
+structure Bytehashtab = Hash_Table(
+  type key = Word8Vector.vector
+  val eq = (op =) : Word8Vector.vector * Word8Vector.vector -> bool
+  val hash = Hashers.bitvec
+)
