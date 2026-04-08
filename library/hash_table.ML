@@ -278,18 +278,19 @@ fun position (pos: Position.T) : word =
     Word.xorb (int offset, string file)
   end
 
-(* Byte vector hash: extract native word from first 4 or 8 bytes *)
-val bitvec : Word8Vector.vector -> word =
-  if Word.wordSize >= 64 then
-    fn h =>
-      let
-        val lo = PackWord32Little.subVec (h, 0)
-        val hi = PackWord32Little.subVec (h, 1)
-      in
-        Word.fromLargeWord (LargeWord.orb (lo, LargeWord.<< (hi, 0w32)))
-      end
-  else
-    fn h => Word.fromLargeWord (PackWord32Little.subVec (h, 0))
+(* Byte vector hash: FNV-1a over all bytes *)
+fun bitvec (h : Word8Vector.vector) : word =
+  let
+    val len = Word8Vector.length h
+    val hv = Unsynchronized.ref (0wxCBF29CE484222325 : Word64.word)
+    val prime = 0wx100000001B3 : Word64.word
+    val i = Unsynchronized.ref 0
+  in
+    while !i < len do
+      (hv := Word64.* (Word64.xorb (!hv, Word64.fromLargeWord (Word8.toLargeWord (Word8Vector.sub (h, !i)))), prime);
+       i := !i + 1);
+    Word.fromLargeWord (Word64.toLargeWord (!hv))
+  end
 
 end
 
