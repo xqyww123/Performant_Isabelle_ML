@@ -80,7 +80,7 @@ fun key_of_term t = add_key_of_terms (t, []);
 
 (*beta-eta normalize if needed*)
 fun norm t =
-  if Term.could_beta_eta_contract t then Envir.beta_eta_contract t else t;
+  if Term.could_beta_contract t orelse Term.could_eta_contract t then Envir.beta_eta_contract t else t;
 
 (*Trees indexed by key lists: each arc is labelled by a key.
   Each node contains a list of items, and arcs to children.
