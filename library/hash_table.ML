@@ -245,6 +245,7 @@ signature HASHERS = sig
   val string : string -> word
   val position : Position.T -> word
   val bitvec : Word8Vector.vector -> word
+  val combine : word * word -> word
 end
 
 structure Hashers : HASHERS = struct
@@ -278,6 +279,17 @@ fun position (pos: Position.T) : word =
     Word.xorb (int offset, string file)
   end
 
+(* Combine two hashes into one.
+   Order-sensitive boost-style mixing: hashing the golden-ratio-perturbed h2
+   together with shifted copies of h1 spreads bits so that (a, b) and (b, a)
+   do not collide (which plain xorb would). *)
+fun combine (h1 : word, h2 : word) : word =
+  let
+    val a = Word.+ (h2, 0wx9E3779B9)
+    val a = Word.+ (a, Word.<< (h1, 0w6))
+    val a = Word.+ (a, Word.>> (h1, 0w2))
+  in Word.xorb (h1, a) end
+
 (* Byte vector hash: FNV-1a over all bytes *)
 fun bitvec (h : Word8Vector.vector) : word =
   let
@@ -292,6 +304,16 @@ fun bitvec (h : Word8Vector.vector) : word =
     Word.fromLargeWord (Word64.toLargeWord (!hv))
   end
 
+end
+
+(* Binary product combinator: combine two HASH_KEYs into a HASH_KEY for pairs.
+   The result is itself a HASH_KEY, so products compose, and it can be fed
+   directly to Hash_Table, e.g. Hash_Table(Hash_Product(...)). *)
+functor Hash_Product(structure A: HASH_KEY structure B: HASH_KEY): HASH_KEY =
+struct
+  type key = A.key * B.key
+  fun hash (a, b) = Hashers.combine (A.hash a, B.hash b)
+  fun eq ((a1, b1), (a2, b2)) = A.eq (a1, a2) andalso B.eq (b1, b2)
 end
 
 (* Backward compatibility *)
