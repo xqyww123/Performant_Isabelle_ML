@@ -35,6 +35,8 @@ functor MessagePack(S : sig
                       -> ('a * 'b * 'c * 'd * 'e * 'f * 'g * 'i * 'j * 'k) packer
     val packTuple11 : 'a packer * 'b packer * 'c packer * 'd packer * 'e packer * 'f packer * 'g packer * 'i packer * 'j packer * 'k packer * 'l packer
                       -> ('a * 'b * 'c * 'd * 'e * 'f * 'g * 'i * 'j * 'k * 'l) packer
+    val packTuple12 : 'a packer * 'b packer * 'c packer * 'd packer * 'e packer * 'f packer * 'g packer * 'i packer * 'j packer * 'k packer * 'l packer * 'm packer
+                      -> ('a * 'b * 'c * 'd * 'e * 'f * 'g * 'i * 'j * 'k * 'l * 'm) packer
 
     val packPairList : ('a packer * 'b packer) -> ('a * 'b) list packer
     val packMapTabulate : ('a packer * 'b packer) -> (int * (int -> 'a * 'b)) packer
@@ -81,6 +83,7 @@ functor MessagePack(S : sig
     val unpackTuple9 : 'a unpacker * 'b unpacker * 'c unpacker * 'd unpacker * 'e unpacker * 'f unpacker * 'g unpacker * 'h unpacker * 'i unpacker -> ('a * 'b * 'c * 'd * 'e * 'f * 'g * 'h * 'i) unpacker
     val unpackTuple10 : 'a unpacker * 'b unpacker * 'c unpacker * 'd unpacker * 'e unpacker * 'f unpacker * 'g unpacker * 'h unpacker * 'i unpacker * 'j unpacker -> ('a * 'b * 'c * 'd * 'e * 'f * 'g * 'h * 'i * 'j) unpacker
     val unpackTuple11 : 'a unpacker * 'b unpacker * 'c unpacker * 'd unpacker * 'e unpacker * 'f unpacker * 'g unpacker * 'h unpacker * 'i unpacker * 'j unpacker * 'k unpacker -> ('a * 'b * 'c * 'd * 'e * 'f * 'g * 'h * 'i * 'j * 'k) unpacker
+    val unpackTuple12 : 'a unpacker * 'b unpacker * 'c unpacker * 'd unpacker * 'e unpacker * 'f unpacker * 'g unpacker * 'h unpacker * 'i unpacker * 'j unpacker * 'k unpacker * 'l unpacker -> ('a * 'b * 'c * 'd * 'e * 'f * 'g * 'h * 'i * 'j * 'k * 'l) unpacker
 
     val unpackMapFold : ('a unpacker * 'b unpacker) -> ('a * 'b * 'c -> 'c) -> 'c -> 'c unpacker
     val unpackPairList : ('a unpacker * 'b unpacker) -> ('a * 'b) list unpacker
@@ -200,6 +203,10 @@ end = struct
       fun packTuple11 (p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11) (v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11) outs =
         (outputArrayLength 11 outs;
         p1 v1 outs; p2 v2 outs; p3 v3 outs; p4 v4 outs; p5 v5 outs; p6 v6 outs; p7 v7 outs; p8 v8 outs; p9 v9 outs; p10 v10 outs; p11 v11 outs)
+
+      fun packTuple12 (p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12) (v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12) outs =
+        (outputArrayLength 12 outs;
+        p1 v1 outs; p2 v2 outs; p3 v3 outs; p4 v4 outs; p5 v5 outs; p6 v6 outs; p7 v7 outs; p8 v8 outs; p9 v9 outs; p10 v10 outs; p11 v11 outs; p12 v12 outs)
 
       fun packPairList (p1, p2) values outs =
         (outputMapLength (List.length values) outs;
@@ -644,6 +651,25 @@ end = struct
         val (v11, ins11) = u11 ins10
       in
         ((v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11), ins11)
+      end
+
+    fun unpackTuple12 (u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12) ins =
+      let
+        val ins0 = expect (fixArray 12) ins
+        val (v1, ins1) = u1 ins0
+        val (v2, ins2) = u2 ins1
+        val (v3, ins3) = u3 ins2
+        val (v4, ins4) = u4 ins3
+        val (v5, ins5) = u5 ins4
+        val (v6, ins6) = u6 ins5
+        val (v7, ins7) = u7 ins6
+        val (v8, ins8) = u8 ins7
+        val (v9, ins9) = u9 ins8
+        val (v10, ins10) = u10 ins9
+        val (v11, ins11) = u11 ins10
+        val (v12, ins12) = u12 ins11
+      in
+        ((v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12), ins12)
       end
 
     local
