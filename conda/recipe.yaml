@@ -92,10 +92,26 @@ build:
         # printed NOTHING on a windows-latest runner (measured by this project's
         # preunlink-probe) and PowerShell would need quoting that cannot survive here.
         #
-        # UNVERIFIED, on two counts: this conversion has never run on a real
-        # windows-latest runner, and it leaves the drive letter in its original case
-        # (/cygdrive/C/...), which is assumed -- not known -- to be accepted.  Probe both
-        # before trusting this; see the release workflow's Windows smoke leg.
+        # All of the above is VERIFIED on a real windows-latest runner (isabelle-packaging-ci
+        # component-win-hooks-probe, run 29637825807), including a prefix containing spaces
+        # and one on a non-C: drive.  The drive letter needs NO lowercasing: Isabelle accepts
+        # /cygdrive/C/... and lowercases it itself when writing etc/components, while the
+        # native form fails exactly as described above ('Illegal character ":"').
+        #
+        # The `getenv -b ISABELLE_HOME` line below is a THROWAWAY WARM-UP, and it is the
+        # difference between this hook working and silently doing nothing.  Cygwin heals
+        # itself on the FIRST isabelle call (getsettings -> Setup.classpath -> cygwin_init),
+        # but that call's Java classpath is computed before the heal completes -- so the
+        # first invocation is precisely the one that cannot run a Scala tool, and
+        # `components` IS a Scala tool.  Measured on a cold prefix:
+        #     Error: Could not find or load main class isabelle.Components
+        # A bash-only subcommand succeeds on that first call, so it absorbs the cold start.
+        # Both hooks need it: install-then-immediately-remove leaves pre-unlink cold too.
+        # Its exit status is deliberately ignored, and `call` does not propagate failure into
+        # the script's exit status, so `exit /b 0` still holds and conda cannot roll back.
+        #
+        # This is why the base package's own smoke tests never caught it: they use `version`
+        # and `getenv`, which are bash-only and work on a cold prefix.
         printf '%s\r\n' \
           '@echo off' \
           "set \"COMP=%PREFIX%\\share\\$name\"" \
@@ -103,6 +119,7 @@ build:
           'set "REST=%COMP:~2%"' \
           'set "REST=%REST:\=/%"' \
           'set "CYG=/cygdrive/%DL%%REST%"' \
+          'call "%PREFIX%\isa\bin\isabelle.bat" getenv -b ISABELLE_HOME >nul 2>&1' \
           "call \"%PREFIX%\\isa\\bin\\isabelle.bat\" components $verb \"%CYG%\" >nul 2>&1" \
           'exit /b 0' \
           > "$PREFIX/Scripts/.$name-$action.bat"
