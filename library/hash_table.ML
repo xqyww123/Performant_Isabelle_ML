@@ -250,8 +250,13 @@ end
 
 structure Hashers : HASHERS = struct
 
-(* Integer hash: Knuth multiplicative hash *)
-val int_multiplier : word = 0w2654435761
+(* Integer hash: Knuth multiplicative hash.
+   Write the 32-bit golden-ratio constant via Word.fromLarge so it does not overflow the
+   NATIVE word on a 31-bit-word Poly/ML (ML_system_64 = false): fromLarge truncates to the
+   native width (full value on 64-bit words, low bits on 32-bit) instead of raising
+   Overflow.  Hashes are per-process, never serialized across platforms, so the truncation
+   is harmless. *)
+val int_multiplier : word = Word.fromLarge (0wx9E3779B9 : LargeWord.word)
 
 fun int (k: int) : word = Word.* (Word.fromInt k, int_multiplier)
 
@@ -285,7 +290,7 @@ fun position (pos: Position.T) : word =
    do not collide (which plain xorb would). *)
 fun combine (h1 : word, h2 : word) : word =
   let
-    val a = Word.+ (h2, 0wx9E3779B9)
+    val a = Word.+ (h2, Word.fromLarge (0wx9E3779B9 : LargeWord.word))
     val a = Word.+ (a, Word.<< (h1, 0w6))
     val a = Word.+ (a, Word.>> (h1, 0w2))
   in Word.xorb (h1, a) end
