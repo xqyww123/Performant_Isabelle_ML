@@ -174,7 +174,13 @@ fun outcome res =
   contain no beta redex, and no rule of the net may still fire anywhere in it
   (binders opened as fresh frees).  The only oracle that catches a defect made
   identically in both layers, and the only one usable on loose-Bound terms -- but
-  it is dead unless the corpus contains `gen_rule_beta' rules.*)
+  it is dead unless the corpus contains `gen_rule_beta' rules.
+
+  The opener is a plain `subst_bound', which shifts the OTHER loose Bounds down by
+  one -- sound for THIS corpus only because no generated rule contains a loose
+  Bound at all (`gen_rhs' is called with bs = [] for rules and its binder branch is
+  dead), so a uniform shift cannot change what fires.  Re-check before reusing the
+  oracle on a rule family with concrete loose Bounds in left-hand sides.*)
 fun o1_violation net t =
   let
     fun has_redex (Abs _ $ _) = true

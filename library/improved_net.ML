@@ -47,8 +47,9 @@ end
 *)
 
 
-(*A copy of `NET' (Pure/net.ML:1-28) with one change: `key' is made concrete, so
-  that white-box tests can inspect the encoding.  It is a copy and not an `include'
+(*A copy of `NET' (Pure/net.ML:16-41) with two changes: `key' is made concrete, so
+  that white-box tests can inspect the encoding, and `insert_term_last(_safe)' is
+  added.  It is a copy and not an `include'
   because SML will not let a signature re-specify a type the include brought in
   ("Type (key) is already present in this signature").  Re-sync this block if Pure's
   `NET' changes; the ascription at the bottom of this file is what catches drift.*)

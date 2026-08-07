@@ -143,11 +143,13 @@ sig
   (*`Theory_Data'/`Generic_Data' demand a merge, a theory being a DAG.  Writing one
     by hand is possible -- `rules' is transparent -- but `iNet.merge' takes an
     equality predicate, and it has to be the SAME one `add_rule' and `del_rule' use
-    (`Thm.eq_thm_prop').  Guessing `Thm.eq_thm', which also compares hypotheses and
-    certificates, leaves two copies of one rule after a merge; `del_rule' then
-    removes one, and the survivor keeps firing and can never be deleted.  Exported
-    so that callers write `val merge = Merely_Rewrite.merge_rules' and cannot get
-    that wrong.*)
+    (`Thm.eq_thm_prop': prop + tpairs).  Guessing `Thm.eq_thm' -- which additionally
+    compares hyps and shyps; NO predicate looks at certificates, so trimming never
+    affects equality -- keeps two copies after a merge whenever same-prop rules
+    differ in hyps or shyps, and both then fire as duplicate candidates (a later
+    `del_rule' removes both at once -- `iNet' deletion filters every equal copy).
+    Exported so that callers write `val merge = Merely_Rewrite.merge_rules' and
+    cannot get that wrong.*)
   val merge_rules: rules * rules -> rules
 
   (* ONE rewrite step, at the current node only -- no traversal whatsoever.  The
@@ -862,7 +864,7 @@ fun bottom_fixpoint_gen_term mode opts (step: Proof.context -> skel_term) ctxt0 
 
     (*Going under a binder: replace the bound variable by a fresh free, and put it
       back afterwards.  Without this the body has a loose `Bound' in it and a pattern
-      variable could capture it.  This is what `variant_absfree' (more_pattern.ML:60)
+      variable could capture it.  This is what `variant_absfree' (more_pattern.ML:59)
       and `Variable.dest_abs_cterm' (inside `Conv.abs_conv') do, but neither of them
       can be used verbatim -- see the two notes below, one about the substitution and
       one about where the fresh name comes from.

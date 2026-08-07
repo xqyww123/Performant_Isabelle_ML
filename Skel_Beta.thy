@@ -154,8 +154,15 @@ val r = Exn.capture (fn () =>
     (fn _ => fn ct =>
       if Thm.term_of ct aconv aa then bad_step else raise CTERM ("no step", [ct]))
     ctxt0 (Thm.cterm_of ctxt0 (ff $ aa))) ();
-val _ = chk "P8 non-equation step must raise Fail"
-          (case r of Exn.Exn (Fail _) => true | _ => false);
+(*the contract says "with the offending theorem": the payload must name the case
+  and carry the theorem's text (checked on a single token -- the printed theorem
+  carries PIDE markup between tokens)*)
+val _ = chk "P8 non-equation step must raise Fail carrying the theorem"
+          (case r of
+             Exn.Exn (Fail msg) =>
+               String.isSubstring "step returned a non-equation" msg andalso
+               String.isSubstring "aa" msg
+           | _ => false);
 \<close>
 
 section \<open>Accounting gates DC1-DC7 (plan section 8.4b)\<close>
