@@ -2,6 +2,7 @@ theory Skel_X
   imports Main
 begin
 ML_file \<open>library/improved_net.ML\<close>
+ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>
 axiomatization aa :: nat and ff :: "nat \<Rightarrow> nat" and gg :: "nat \<Rightarrow> nat"
 ML \<open>

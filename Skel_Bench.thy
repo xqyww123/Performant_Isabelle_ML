@@ -3,6 +3,7 @@ theory Skel_Bench
 begin
 
 ML_file \<open>library/improved_net.ML\<close>
+ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>
 
 axiomatization
@@ -74,7 +75,7 @@ fun bench reps convs ct =
   end;
 
 fun term_of_mode ctxt mode net =
-  Merely_Rewrite.rewrite_term_mode mode opts net ctxt;
+  Merely_Rewrite.rewrite_term_mode mode opts net ctxt [];
 
 fun row ctxt label reps net ct =
   let
@@ -214,4 +215,5 @@ val _ = row ctxt0 "W4 duplicating redex over W1 tree  " 11
           (Thm.cterm_of ctxt0 (Abs ("x", natT, mkC $ Bound 0 $ Bound 0) $ dup_tree));
 \<close>
 
+(*noise-calibration marker: baseline run 2*)
 end

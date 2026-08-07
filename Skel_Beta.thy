@@ -3,6 +3,7 @@ theory Skel_Beta
 begin
 
 ML_file \<open>library/improved_net.ML\<close>
+ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>
 
 text \<open>
@@ -64,7 +65,7 @@ val modes =
 (*a case run at the term layer, all three modes*)
 fun three label opts net input expect =
   List.app (fn (mn, m) =>
-    let val got = outcome (fn () => Merely_Rewrite.rewrite_term_mode m opts net ctxt0 input)
+    let val got = outcome (fn () => Merely_Rewrite.rewrite_term_mode m opts net ctxt0 [] input)
     in chk (label ^ " term/" ^ mn ^ ": got " ^ got ^ ", want " ^ expect) (got = expect) end)
     modes;
 

@@ -3,6 +3,7 @@ theory Skel_Boundary
 begin
 
 ML_file \<open>library/improved_net.ML\<close>
+ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>
 
 text \<open>Deliberate attempts to break the skeleton.\<close>
@@ -139,13 +140,13 @@ let
   val t = ff $ aa;
   val liar =
     Merely_Rewrite.single_step_rewrite_skel_term
-      (fn ctxt => fn th => fn t' =>
+      (fn ctxt => fn th => fn _ => fn t' =>
         Option.map (fn (u, _) => (u, Var (("h", 0), natT)))
           (Pattern.match_rew (Proof_Context.theory_of ctxt) t'
             (Logic.dest_equals (Thm.prop_of th))))
       net;
   fun run step =
-    show (Merely_Rewrite.bottom_fixpoint_skel_term Merely_Rewrite.default_options step ctxt0 t);
+    show (Merely_Rewrite.bottom_fixpoint_skel_term Merely_Rewrite.default_options step ctxt0 [] t);
 in
   writeln ("B5 term layer, honest skeleton   " ^ run (Merely_Rewrite.rewrs_net_skel_term net) ^
            "\n   term layer, lying  skeleton   " ^ run liar)

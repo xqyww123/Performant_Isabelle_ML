@@ -3,25 +3,29 @@ theory Skel_Loose
 begin
 
 ML_file \<open>library/improved_net.ML\<close>
+ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>
 
 text \<open>
   The term layer exists so that a term with a loose \<open>Bound\<close> can be rewritten at all.
-  Two different questions are asked here and they have different answers.
+  Two different questions are asked here.
 
-  1. A binder the traversal itself walks past.  Going under it replaces the bound
-     variable by a fresh free, so a pattern variable cannot capture it.  MEASURED
-     BELOW, and cross-checked against the conv layer, which is capture-free by
-     construction because \<open>Conv.abs_conv\<close> does the same thing.
+  1. A binder the traversal itself walks past.  The traversal pushes it onto the
+     \<open>bvs\<close> list and leaves the body untouched; the substituter lifts every binding
+     by its landing depth, so a binder from a rule's right-hand side cannot capture
+     anything.  MEASURED BELOW, and cross-checked against the conv layer.
 
-  2. A \<open>Bound\<close> that was ALREADY loose in the input.  The answer is sharper than
-     "it might be captured": \<open>Pattern.match\<close> REFUSES to bind a schematic variable to
-     anything containing a loose bound variable (\<open>match_bind\<close>, pattern.ML:320-329),
-     so a rule with a hole where the loose \<open>Bound\<close> sits does not fire at all.  No
-     capture; a silently skipped rewrite instead.  Everything else in the same term
-     is rewritten normally -- it is the MATCHED MATERIAL that must be free of loose
-     bounds, not the whole term.  MEASURED BELOW, alongside
-     \<open>Pattern.rewrite_term\<close> on the same inputs.
+  2. A \<open>Bound\<close> that was ALREADY loose in the input.  Through the bvs-taking entry
+     (\<open>rewrite_term_bvs\<close>) such positions are ordinary rewritable material: the
+     matcher types them from \<open>bvs\<close>, and material moved under a rule-supplied
+     binder comes out lifted.  Hand-computed expectations below.
+
+  HISTORY.  Before the bvs rework (MERELY_REWRITE_BVS_THREADING_PLAN.md) the
+  matcher had no way to type a loose \<open>Bound\<close>: the higher-order path refused the
+  binding -- a silently skipped rewrite -- and the first-order fallback could
+  CAPTURE one under a rule-supplied binder.  The samples in section 2 asserted
+  exactly those behaviours then; they are flipped to the correct expectations
+  now (plan B3(4)).
 \<close>
 
 axiomatization
@@ -54,12 +58,8 @@ fun dump (Const (c, T)) = "c<" ^ c ^ ":" ^ dumpT T ^ ">"
 fun rw rules t =
   Merely_Rewrite.rewrite_term (Merely_Rewrite.make_rules rules) ctxt0 t;
 
-(*`Pattern.rewrite_term' has no "did this step change anything" guard, so a rule
-  that rewrites a term to itself spins for ever there; measured below in L2e, where
-  it exhausts the ML stack.  Hence the timeout.*)
-fun rw_pattern rules t =
-  Timeout.apply (seconds 5.0)
-    (Pattern.rewrite_term thy0 (map (Logic.dest_equals o Thm.prop_of) rules) []) t;
+val bvsL = map (fn i => ("z" ^ string_of_int i, natT)) (0 upto 5);
+val bvs1 = [("z0", natT)];
 \<close>
 
 section \<open>The conv layer cannot even be handed the input\<close>
@@ -76,9 +76,10 @@ val _ =
 section \<open>1. binders the traversal walks past: no capture\<close>
 
 text \<open>
-  The rule moves its hole under a binder the rule itself introduces.  If the
-  traversal had descended by raw de Bruijn indices, the \<open>Bound 0\<close> standing for \<open>u\<close>
-  would be captured by \<open>w\<close> and the answer would be \<open>qq (\<lambda>u. qq (\<lambda>w. pp w w))\<close>.
+  The rule moves its hole under a binder the rule itself introduces.  The
+  substituter lifts the binding by its landing depth, so the \<open>Bound 0\<close> standing
+  for \<open>u\<close> is NOT captured by \<open>w\<close>; a traversal that forgot the lift would return
+  \<open>qq (\<lambda>u. qq (\<lambda>w. pp w w))\<close>.
 \<close>
 
 ML \<open>
@@ -95,63 +96,46 @@ val _ =
            "\nconv layer  " ^ dump by_conv ^ "\n    " ^ Syntax.string_of_term ctxt0 by_conv ^
            "\n" ^ (if dump by_term = dump by_conv then "AGREE -- no capture"
                    else "*** DIFFER ***"));
+val _ = if dump by_term = dump by_conv then () else error "section 1: layers differ";
 \<close>
 
 section \<open>2. a Bound that was already loose in the input\<close>
 
-text \<open>
-  The answer turns out to be sharper than "it might get captured": IT CANNOT BE
-  MATCHED AT ALL.  \<open>Pattern.match\<close> refuses to bind a schematic variable to anything
-  that contains a loose bound variable (\<open>match_bind\<close>, pattern.ML:320-329), so a rule
-  with a hole where the loose \<open>Bound\<close> sits simply does not fire.  No capture, but
-  also no rewrite, and no warning that one was skipped.
-
-  Rewriting elsewhere in the same term is unaffected: it is the MATCHED MATERIAL
-  that has to be free of loose bounds, not the whole term.
-\<close>
-
 ML \<open>
-fun probe label rules t =
+fun expect label rules bvs t e =
   let
-    val a = Exn.capture (fn () => rw rules t) ();
-    val b = Exn.capture (fn () => rw_pattern rules t) ();
-    fun sh (Exn.Res u) = dump u ^ "   " ^ Syntax.string_of_term ctxt0 u
-      | sh (Exn.Exn e) = "EXN " ^ Runtime.exn_message e;
+    val got = Merely_Rewrite.rewrite_term_bvs (Merely_Rewrite.make_rules rules) ctxt0 bvs t;
   in
-    writeln (label ^
-      "\n    input                        " ^ dump t ^
-      "\n    Merely_Rewrite.rewrite_term  " ^ sh a ^
-      "\n    Pattern.rewrite_term         " ^ sh b)
+    if got aconv e then writeln (label ^ ": ok")
+    else error (cat_lines [label ^ ": MISMATCH",
+      "  input    " ^ dump t, "  expected " ^ dump e, "  got      " ^ dump got])
   end;
 
-(*(a) the hole would have to take the loose Bound: the rule does not fire*)
-val _ = probe "L2a  ff ?x == gg ?x   on   ff (Bound 0)"
-  [rule (ff $ x) (gg $ x)] (ff $ Bound 0);
+(*(a) the hole takes the loose Bound, typed from bvs*)
+val _ = expect "L2a  ff ?x == gg ?x  on  ff B0" [rule (ff $ x) (gg $ x)]
+          bvs1 (ff $ Bound 0) (gg $ Bound 0);
 
-(*(b) the same, with a rule whose right-hand side would move the hole under a NEW
-  binder -- the shape that WOULD capture, if the match were allowed*)
-val _ = probe "L2b  ff ?x == qq (%w. pp ?x w)   on   ff (Bound 0)"
-  move_rule (ff $ Bound 0);
+(*(b) the hole is moved under a NEW binder: lifted, not captured*)
+val _ = expect "L2b  hole under new binder, lifted" move_rule
+          bvs1 (ff $ Bound 0) (qq $ Abs ("w", natT, pp $ Bound 1 $ Bound 0));
 
-(*(c) a GROUND rule: no hole, so nothing to capture, and it fires normally even
-  though the term around it has a loose Bound*)
-val _ = probe "L2c  ff aa == gg aa   on   pp (ff aa) (Bound 0)"
-  [rule (ff $ aa) (gg $ aa)] (pp $ (ff $ aa) $ Bound 0);
+(*(c) a ground rule beside a loose Bound, as before*)
+val _ = expect "L2c  ground rule beside loose Bound" [rule (ff $ aa) (gg $ aa)]
+          bvs1 (pp $ (ff $ aa) $ Bound 0) (pp $ (gg $ aa) $ Bound 0);
 
-(*(d) a rule with a hole, but the matched material is loose-Bound-free: fires*)
-val _ = probe "L2d  ff ?x == gg ?x   on   pp (ff aa) (Bound 0)"
-  [rule (ff $ x) (gg $ x)] (pp $ (ff $ aa) $ Bound 0);
+(*(d) hole rule, matched material closed, as before*)
+val _ = expect "L2d  hole rule, closed material" [rule (ff $ x) (gg $ x)]
+          bvs1 (pp $ (ff $ aa) $ Bound 0) (pp $ (gg $ aa) $ Bound 0);
 
-(*(e) a schematic-headed rule, which the net offers at EVERY node including the bare
-  loose Bound.  This is the case that makes `Pattern.match' compute `fastype_of' of
-  a bare `Bound' and throw; without the handler in `single_step_rewrite_term' this
-  aborts the whole call.*)
-val _ = probe "L2e  ?z == aa   on   pp (ff aa) (Bound 0)"
-  [rule x aa] (pp $ (ff $ aa) $ Bound 0);
+(*(e) a bare schematic rule now fires on the loose Bound as well; every nat
+  subterm collapses to aa bottom-up, so the whole term does*)
+val _ = expect "L2e  bare schematic rule" [rule x aa]
+          bvs1 (pp $ (ff $ aa) $ Bound 0) aa;
 
 (*(f) the loose Bound sits under a binder the traversal walks past*)
-val _ = probe "L2f  ff ?x == gg ?x   on   qq (%u. pp (ff aa) (Bound 1))"
-  [rule (ff $ x) (gg $ x)] (qq $ Abs ("u", natT, pp $ (ff $ aa) $ Bound 1));
+val _ = expect "L2f  loose Bound under walked binder" [rule (ff $ x) (gg $ x)]
+          bvs1 (qq $ Abs ("u", natT, pp $ (ff $ aa) $ Bound 1))
+               (qq $ Abs ("u", natT, pp $ (gg $ aa) $ Bound 1));
 \<close>
 
 section \<open>3. skeleton on/off on loose-Bound input\<close>
@@ -162,7 +146,8 @@ fun both label rules t =
     val net = Merely_Rewrite.make_rules rules;
     fun run mode =
       Exn.capture (fn () =>
-        Merely_Rewrite.rewrite_term_mode mode Merely_Rewrite.default_options net ctxt0 t) ();
+        Merely_Rewrite.rewrite_term_mode mode Merely_Rewrite.default_options
+          net ctxt0 bvsL t) ();
     (*compare on the structural dump only: `Syntax.string_of_term' emits PIDE
       markup whose serial numbers differ from call to call, so it is fine to LOOK at
       but must not be compared*)
@@ -177,7 +162,8 @@ fun both label rules t =
   in
     writeln (label ^ "\n    " ^ c ^ "\n    " ^ pr rc ^
       (if a = b andalso b = c then "\n    all three agree"
-       else "\n    *** DIFFER ***\n    " ^ a ^ "\n    " ^ b))
+       else "\n    *** DIFFER ***\n    " ^ a ^ "\n    " ^ b));
+    if a = b andalso b = c then () else error (label ^ ": modes differ")
   end;
 
 val shell = [rule (ff $ x) (gg $ (pp $ x $ x)), rule (gg $ (pp $ aa $ aa)) aa];

@@ -2,6 +2,7 @@ theory Skel_Probe2
   imports Main
 begin
 ML_file \<open>library/improved_net.ML\<close>
+ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>
 axiomatization ff :: "nat \<Rightarrow> nat" and gg :: "nat \<Rightarrow> nat"
 ML \<open>

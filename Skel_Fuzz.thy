@@ -3,6 +3,7 @@ theory Skel_Fuzz
 begin
 
 ML_file \<open>library/improved_net.ML\<close>
+ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>
 
 text \<open>
@@ -25,7 +26,9 @@ axiomatization
   f2 :: "nat \<Rightarrow> nat" and f3 :: "nat \<Rightarrow> nat" and
   g0 :: "nat \<Rightarrow> nat \<Rightarrow> nat" and g1 :: "nat \<Rightarrow> nat \<Rightarrow> nat" and
   g2 :: "nat \<Rightarrow> nat \<Rightarrow> nat" and
-  qh :: "(nat \<Rightarrow> nat) \<Rightarrow> nat"
+  qh :: "(nat \<Rightarrow> nat) \<Rightarrow> nat" and
+  qh2 :: "(nat \<Rightarrow> nat \<Rightarrow> nat) \<Rightarrow> nat" and
+  f5 :: "nat \<Rightarrow> nat"
 
 ML \<open>
 val ctxt0 = \<^context>;
@@ -52,24 +55,36 @@ fun pick xs = nth xs (rand (length xs));
 
 (*symbol, arity, level*)
 val nullary = [(\<^term>\<open>n0\<close>, 0), (\<^term>\<open>n1\<close>, 1), (\<^term>\<open>n2\<close>, 2), (\<^term>\<open>n3\<close>, 3)];
-val unary = [(\<^term>\<open>f0\<close>, 1), (\<^term>\<open>f1\<close>, 2), (\<^term>\<open>f2\<close>, 3), (\<^term>\<open>f3\<close>, 4)];
+(*f5 sits ABOVE qh_level, so a rule headed by it may use `qh (%w. _)' -- with a
+  hole inside -- on its right-hand side; no other head can (see gen_rhs).*)
+val unary = [(\<^term>\<open>f0\<close>, 1), (\<^term>\<open>f1\<close>, 2), (\<^term>\<open>f2\<close>, 3), (\<^term>\<open>f3\<close>, 4),
+             (\<^term>\<open>f5\<close>, 6)];
 val binary = [(\<^term>\<open>g0\<close>, 2), (\<^term>\<open>g1\<close>, 3), (\<^term>\<open>g2\<close>, 4)];
 val qhC = \<^term>\<open>qh\<close>;
+val qh2C = \<^term>\<open>qh2\<close>;
+val f5C = \<^term>\<open>f5\<close>;
 val qh_level = 5;
 
 fun below lvl xs = filter (fn (_, l) => l < lvl) xs;
 
-(*random term.  `bs' is the list of de Bruijn indices in scope.*)
+(*random term.  `bs' is the list of de Bruijn indices in scope, innermost first.
+  Bound leaves are biased toward an OUTER binder when one exists: matches whose
+  bindings mention a non-innermost contextual binder are what exercise depth
+  bookkeeping, and unbiased picks produce them too rarely.*)
+fun pick_bound bs =
+  if length bs >= 2 andalso rand 2 = 0 then Bound (pick (tl bs)) else Bound (pick bs);
 fun gen_term d bs =
   if d <= 0 orelse rand 4 = 0 then
-    (if null bs orelse rand 2 = 0 then #1 (pick nullary) else Bound (pick bs))
+    (if null bs orelse rand 2 = 0 then #1 (pick nullary) else pick_bound bs)
   else
-    (case rand 6 of
+    (case rand 7 of
       0 => #1 (pick unary) $ gen_term (d - 1) bs
     | 1 => #1 (pick unary) $ gen_term (d - 1) bs
     | 2 => #1 (pick binary) $ gen_term (d - 1) bs $ gen_term (d - 1) bs
     | 3 => #1 (pick binary) $ gen_term (d - 1) bs $ gen_term (d - 1) bs
     | 4 => qhC $ Abs ("u", natT, gen_term (d - 1) (0 :: map (fn i => i + 1) bs))
+    | 5 => qh2C $ Abs ("u1", natT, Abs ("u2", natT,
+             gen_term (d - 1) (0 :: 1 :: map (fn i => i + 2) bs)))
     | _ => (*an explicit beta-redex: the module must contract it eagerly*)
         Abs ("v", natT, gen_term (d - 1) (0 :: map (fn i => i + 1) bs)) $ gen_term (d - 1) bs);
 
@@ -102,29 +117,68 @@ fun gen_rhs lvl holes d bs =
 
 fun mk_thm t = Skip_Proof.make_thm thy0 t;
 
-(*a random rule.  Two families: first-order, and the higher-order pattern
-  `qh (%u. ?P u)', whose right-hand side applies ?P to new material and therefore
-  goes through the deep beta of Conv.rewr_conv.*)
+(*a random rule.  Six families: the bare function-type schematic; `qh (%u. ?P u)',
+  whose right-hand side applies ?P to new material and therefore goes through the
+  deep beta of Conv.rewr_conv; `qh (%u. ?X)', whose binding must IGNORE the binder
+  it sits under; `qh2 (%u1 u2. _)' with a true argument subset or a permutation;
+  a left-hand side repeating one schematic at two binder depths, so the
+  repeated-schematic check compares bindings stored from different depths; and
+  first-order -- where an f5 head may put `qh (%w. _)' with a hole inside on its
+  right-hand side (see gen_rhs).*)
 fun gen_rule i =
   let
     val vname = "x" ^ string_of_int i;
     fun v k = Var ((vname ^ "_" ^ string_of_int k, 0), natT);
     fun arg k = if rand 4 > 0 then v k else gen_term 1 [];
     val fT = natT --> natT;
-  in
-    if rand 8 = 0 then
-      (*a rule whose left-hand side is a bare schematic of FUNCTION type: the only
-        kind of rule that can match a leftover schematic, and therefore the only
-        kind that can tell whether the extra-variable guard in `rewr_skel_conv' is
-        doing its job.  It rewrites to the lowest level symbol, so it terminates.*)
-      mk_thm (Logic.mk_equals (Var ((vname ^ "_F", 0), fT), #1 (hd unary)))
-    else if rand 5 = 0 then
+    (*the only kind of rule that can match a leftover schematic, and therefore the
+      only kind that can tell whether the extra-variable guard in `rewr_skel_conv'
+      is doing its job.  It rewrites to the lowest level symbol, so it terminates.*)
+    fun bare () = mk_thm (Logic.mk_equals (Var ((vname ^ "_F", 0), fT), #1 (hd unary)));
+    fun qh_P () =
       let
-        val PV = Var ((vname ^ "_P", 0), natT --> natT);
+        val PV = Var ((vname ^ "_P", 0), fT);
         val lhs = qhC $ Abs ("u", natT, PV $ Bound 0);
         val rhs = PV $ gen_rhs qh_level [] 2 [];
-      in mk_thm (Logic.mk_equals (lhs, rhs)) end
-    else
+      in mk_thm (Logic.mk_equals (lhs, rhs)) end;
+    fun qh_X () =
+      let
+        val XV = Var ((vname ^ "_X", 0), natT);
+        val lhs = qhC $ Abs ("u", natT, XV);
+        val rhs = gen_rhs qh_level [XV] 2 [];
+      in mk_thm (Logic.mk_equals (lhs, rhs)) end;
+    fun qh2_fam () =
+      let
+        val P1 = Var ((vname ^ "_P", 0), fT);
+        val P2 = Var ((vname ^ "_P", 0), natT --> fT);
+        val (body, rhs) =
+          (case rand 3 of
+            0 => (P1 $ Bound 1, P1 $ gen_rhs qh_level [] 2 [])
+          | 1 => (P1 $ Bound 0, P1 $ gen_rhs qh_level [] 2 [])
+          | _ => (P2 $ Bound 0 $ Bound 1,
+                  P2 $ gen_rhs qh_level [] 2 [] $ gen_rhs qh_level [] 2 []));
+        val lhs = qh2C $ Abs ("u1", natT, Abs ("u2", natT, body));
+      in mk_thm (Logic.mk_equals (lhs, rhs)) end;
+    (*family-4 proper: the binding is GUARANTEED to land under a new binder on the
+      right, so material taken from under contextual binders must come out lifted.
+      Termination: head level 6 outranks qh and the binary symbol; XV placed once.*)
+    fun fam4 () =
+      let
+        val XV = Var ((vname ^ "_X", 0), natT);
+        val lhs = f5C $ XV;
+        val rhs = qhC $ Abs ("w", natT, #1 (pick binary) $ XV $ Bound 0);
+      in mk_thm (Logic.mk_equals (lhs, rhs)) end;
+    (*termination: the qh consumed from the matched instance outranks everything
+      the right-hand side adds, and XV is placed at most once*)
+    fun rep2 () =
+      let
+        val XV = Var ((vname ^ "_X", 0), natT);
+        val (bh, lvl) = pick binary;
+        val (uh, _) = pick (below qh_level unary);
+        val lhs = bh $ XV $ (qhC $ Abs ("u", natT, uh $ XV));
+        val rhs = gen_rhs lvl [XV] 2 [];
+      in mk_thm (Logic.mk_equals (lhs, rhs)) end;
+    fun first_order () =
       let
         val (hd_sym, lvl, args) =
           if rand 2 = 0 then
@@ -133,15 +187,21 @@ fun gen_rule i =
             let val (s, l) = pick binary in (s, l, [arg 1, arg 2]) end;
         val lhs = Term.list_comb (hd_sym, args);
         val holes = filter Term.is_Var args;
-        (*with some probability leave a schematic on the right that is not on the
-          left -- the family `Raw_Simplifier' rejects and this module accepts*)
         (*NO extra-variable rules here: `Conv.rewr_conv' renames schematics apart
           with `Thm.incr_indexes' and `Pattern.match_rew' does not, so the two layers
           legitimately disagree on them and the cross-layer check could not run.
           They are covered by the hand-written corpus (C27, C28) instead.*)
-        val holes' = holes;
-        val rhs = gen_rhs lvl holes' 2 [];
-      in mk_thm (Logic.mk_equals (lhs, rhs)) end
+        val rhs = gen_rhs lvl holes 2 [];
+      in mk_thm (Logic.mk_equals (lhs, rhs)) end;
+  in
+    (case rand 16 of
+      0 => bare () | 1 => bare ()
+    | 2 => qh_P () | 3 => qh_P ()
+    | 4 => qh_X ()
+    | 5 => qh2_fam () | 6 => qh2_fam ()
+    | 7 => rep2 ()
+    | 8 => fam4 ()
+    | _ => first_order ())
   end;
 
 (*LHS a bare unary symbol (so it can match in function position); RHS an Abs.
@@ -181,22 +241,24 @@ fun outcome res =
   Bound at all (`gen_rhs' is called with bs = [] for rules and its binder branch is
   dead), so a uniform shift cannot change what fires.  Re-check before reusing the
   oracle on a rule family with concrete loose Bounds in left-hand sides.*)
-fun o1_violation net t =
+fun o1_violation net bvs0 t0 =
   let
     fun has_redex (Abs _ $ _) = true
       | has_redex (t $ u) = has_redex t orelse has_redex u
       | has_redex (Abs (_, _, b)) = has_redex b
       | has_redex _ = false;
-    fun still_fires t =
-      (case Merely_Rewrite.rewrs_net_term net ctxt0 t of
+    (*binders are THREADED as bvs, exactly as the engine does after A3 -- no
+      opening as fresh frees, so the oracle sees the same terms the engine saw*)
+    fun still_fires bvs t =
+      (case Merely_Rewrite.rewrs_net_term net ctxt0 bvs t of
          NONE => false
        | SOME t' => not (t aconv t'))
       orelse
       (case t of
-         u $ v => still_fires u orelse still_fires v
-       | Abs (a, T, b) => still_fires (subst_bound (Free ("_o1_" ^ a, T), b))
+         u $ v => still_fires bvs u orelse still_fires bvs v
+       | Abs (a, T, b) => still_fires ((a, T) :: bvs) b
        | _ => false);
-  in has_redex t orelse still_fires t end;
+  in has_redex t0 orelse still_fires bvs0 t0 end;
 
 fun counted mk =
   let
@@ -223,13 +285,13 @@ fun one_round () =
         (bump (Merely_Rewrite.rewrs_net_skel_conv net)) ctxt0);
     val rw_ref =
       Merely_Rewrite.bottom_fixpoint_term_mode Merely_Rewrite.Reference opts
-        (Merely_Rewrite.rewrs_net_term net) ctxt0;
+        (Merely_Rewrite.rewrs_net_term net) ctxt0 [];
     val rw_no =
       Merely_Rewrite.bottom_fixpoint_term_mode Merely_Rewrite.No_Skeleton opts
-        (Merely_Rewrite.rewrs_net_term net) ctxt0;
+        (Merely_Rewrite.rewrs_net_term net) ctxt0 [];
     val rw_sk =
       Merely_Rewrite.bottom_fixpoint_skel_term opts
-        (Merely_Rewrite.rewrs_net_skel_term net) ctxt0;
+        (Merely_Rewrite.rewrs_net_skel_term net) ctxt0 [];
     val cv_un =
       Merely_Rewrite.bottom_fixpoint_skel_conv opts
         (Merely_Rewrite.single_step_rewrite_skel_conv
@@ -252,7 +314,7 @@ fun one_round () =
      diverged = String.isPrefix "DIVERGES" o_sk, broken = String.isPrefix "EXN" o_sk,
      pruned = ! n_sk < ! n_no, visits = (! n_ref, ! n_no, ! n_sk),
      rewrote = (o_sk <> "OK " ^ dump input),
-     o1 = (case sk_res of Exn.Res t => o1_violation net t | _ => false),
+     o1 = (case sk_res of Exn.Res t => o1_violation net [] t | _ => false),
      texts = (o_ref, o_no, o_sk, o_un), ttexts = (t_ref, t_no, t_sk)}
   end;
 
@@ -305,13 +367,20 @@ fun fuzz start n =
 
 ML \<open>
 (*Loose-Bound fuzzing: the conv layer cannot be handed these at all, so only the
-  three term-layer variants are compared -- and they must still agree literally.
-  Loose indices are injected at random leaf positions of an otherwise ordinary
-  random term.*)
-fun loosen d t =
+  three term-layer variants are compared -- entered through the bvs-taking mode
+  entry with a six-entry all-nat `bvs' -- and they must still agree literally.
+  Loose indices are injected at random nat-typed positions (argument positions
+  and nat leaves, never a function position or an `Abs' argument): the inputs
+  stay well-typed relative to `bvs', because under the garbage-in contract of
+  `rewrite_term_bvs' an ill-typed input is out of corpus scope.*)
+val bvs6 = map (fn i => ("z" ^ string_of_int i, natT)) (0 upto 5);
+fun loosen t =
   (case t of
-    u $ v => (if rand 4 = 0 then Bound (rand 6) else loosen d u) $ loosen d v
-  | Abs (a, T, u) => Abs (a, T, loosen d u)
+    u $ v =>
+      loosen u $
+      (if rand 4 = 0 andalso (case v of Abs _ => false | _ => true)
+       then Bound (rand 6) else loosen v)
+  | Abs (a, T, u) => Abs (a, T, loosen u)
   | _ => if rand 5 = 0 then Bound (rand 6) else t);
 
 fun fuzz_loose start n =
@@ -324,10 +393,10 @@ fun fuzz_loose start n =
         val _ = srand (start + i);
         val rules = map gen_rule2 (1 upto (3 + rand 6));
         val net = Merely_Rewrite.make_rules rules;
-        val input = loosen 0 (gen_term (4 + rand 3) []);
+        val input = loosen (gen_term (4 + rand 3) []);
         fun run mode =
           Exn.capture (fn () =>
-            Merely_Rewrite.rewrite_term_mode mode opts net ctxt0 input) ();
+            Merely_Rewrite.rewrite_term_mode mode opts net ctxt0 bvs6 input) ();
         val ra = run Merely_Rewrite.Reference;
         val rb = run Merely_Rewrite.No_Skeleton;
         val rc = run Merely_Rewrite.Skeleton;
@@ -341,7 +410,7 @@ fun fuzz_loose start n =
             ["ref " ^ a, "no  " ^ b, "skl " ^ c]);
         val _ =
           (case rc of
-             Exn.Res t => if o1_violation net t then o1bad := record () :: ! o1bad else ()
+             Exn.Res t => if o1_violation net bvs6 t then o1bad := record () :: ! o1bad else ()
            | _ => ());
       in
         if a = b andalso b = c then () else bad := record () :: ! bad

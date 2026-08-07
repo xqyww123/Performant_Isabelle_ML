@@ -3,6 +3,7 @@ theory Skel_Correct
 begin
 
 ML_file \<open>library/improved_net.ML\<close>
+ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>
 
 axiomatization
@@ -110,15 +111,15 @@ fun counted_conv opts mode net ctxt =
 fun counted_term opts mode net ctxt =
   let
     val n = Unsynchronized.ref 0;
-    fun bump f ctxt' t = (n := ! n + 1; f ctxt' t);
+    fun bump f ctxt' bvs t = (n := ! n + 1; f ctxt' bvs t);
     val rw =
       (case mode of
         Merely_Rewrite.Skeleton =>
           Merely_Rewrite.bottom_fixpoint_skel_term opts
-            (bump (Merely_Rewrite.rewrs_net_skel_term net)) ctxt
+            (bump (Merely_Rewrite.rewrs_net_skel_term net)) ctxt []
       | _ =>
           Merely_Rewrite.bottom_fixpoint_term_mode mode opts
-            (bump (Merely_Rewrite.rewrs_net_term net)) ctxt);
+            (bump (Merely_Rewrite.rewrs_net_term net)) ctxt []);
   in (rw, n) end;
 
 fun show_term t =
