@@ -62,7 +62,12 @@ val pp = Free ("pp", a --> a --> a);
 val rr = Free ("rr", a --> a --> a --> a);
 val qq = Free ("qq", (a --> a) --> a);
 val s2 = Free ("s2", (a --> a) --> (a --> a) --> a);
+(*a second type: without one, every type-level regression is invisible -- the
+  type instantiation stays empty and `typ_match' can never disagree*)
+val b = TFree ("'b", []);
+val qb = Free ("qb", (b --> a) --> a);
 val vx = Var (("x", 0), a);
+val vy = Var (("y", 0), a);
 val vP = Var (("P", 0), a --> a);
 val vQ = Var (("Q", 0), a --> a --> a);
 
@@ -98,17 +103,25 @@ fun kernel (bvs, pat, rhs, obj) =
                     (Thm.cterm_of ctxt0 (wrap bvs obj)))))))
   handle CTERM _ => NONE | Pattern.MATCH => NONE | Pattern.Pattern => NONE;
 
-(*CONTROL for the oracle: a materialisation that ignores the enclosing binders,
-  i.e. reproduces the very defect under test on the oracle side.  Every sample
-  whose object mentions a contextual bound variable underneath a binder must see
-  the two disagree; if they never disagree the oracle is not looking at anything.*)
+(*CONTROL for the oracle: a materialisation that reads a loose `Bound' at its
+  RAW index instead of `k - d', i.e. reproduces the very defect under test on the
+  oracle side.  Every sample whose object mentions a contextual bound variable
+  underneath a binder must see the two disagree; if they never disagree the
+  oracle is not looking at anything.
+
+  It must still close EVERY loose `Bound': leaving one behind makes
+  `Thm.cterm_of' raise `TYPE', which aborts the whole run instead of reporting a
+  mismatch -- and the shapes that trigger that are exactly the ones the corpus is
+  meant to grow towards.  So where the raw index is out of range it falls back to
+  the correct one; blindness is expressed wherever it can be.*)
 fun close_blind bvs t =
   let val n = length bvs;
-      fun go (Bound k) = if k < n then Free (nth bvs k) else Bound k
-        | go (Abs (x, T, b)) = Abs (x, T, go b)
-        | go (u $ v) = go u $ go v
-        | go x = x;
-  in go t end;
+      fun go d (t as Bound k) =
+            if k < d then t else Free (nth bvs (if k < n then k else k - d))
+        | go d (Abs (x, T, b)) = Abs (x, T, go (d + 1) b)
+        | go d (u $ v) = go d u $ go d v
+        | go _ x = x;
+  in go 0 t end;
 
 fun kernel_blind (bvs, pat, rhs, obj) =
   SOME (Thm.term_of (Thm.rhs_of
@@ -119,10 +132,10 @@ fun kernel_blind (bvs, pat, rhs, obj) =
 (*The code under test.  The runner is deliberately more than two-valued and gives
   `Pattern.Unif' a bucket of its own: a `handle _ => false' runner would record a
   leaked Unif as an ordinary "did not match" and the defect would look green.*)
-datatype outcome = OK of Envir.tenv | NO of string;
+datatype outcome = OK of Type.tyenv * Envir.tenv | NO of string;
 
 fun plpr fb bvs po =
-  OK (snd (PLPR_Pattern.match thy fb bvs po (Vartab.empty, Vartab.empty)))
+  OK (PLPR_Pattern.match thy fb bvs po (Vartab.empty, Vartab.empty))
   handle Pattern.MATCH => NO "REJECT"
        | Pattern.Unif => NO "!! Pattern.Unif LEAKED"
        | Pattern.Pattern => NO "!! Pattern.Pattern leaked"
@@ -130,32 +143,52 @@ fun plpr fb bvs po =
        | TERM (m, _) => NO ("!! TERM " ^ m)
        | TYPE (m, _, _) => NO ("!! TYPE " ^ m);
 
-fun show_outcome (NO s) = s
-  | show_outcome (OK tms) = "ACCEPT  " ^ shenv tms;
+(*The type instantiation is kept and rendered.  Dropping it would make every
+  regression that shows only in `tyenv' -- notably the one the comment above
+  `first_order_match's `fastype_of1' forbids -- invisible.  It renders empty for
+  a sample whose types hold no schematic type variables, so it costs the existing
+  expectations nothing.*)
+fun shT (Type (n, [])) = n
+  | shT (Type (n, Ts)) = n ^ "[" ^ commas (map shT Ts) ^ "]"
+  | shT (TFree (n, _)) = n
+  | shT (TVar ((n, i), _)) = "?" ^ n ^ string_of_int i;
 
-(*Substitution as the contract prescribes it: a binding dropped into a position
-  under n binders is lifted by n.  `Envir.subst_term' does NOT do this -- the
-  module deliberately ships no lifting substituter yet -- so the obligation lives
-  here, where it is also what makes the check below meaningful.*)
-fun subst_lifted tms =
-  let
-    fun go d (t as Var v) = (case Envir.lookup1 tms v of
-                               SOME u => Term.incr_boundvars d u
-                             | NONE => t)
-      | go d (Abs (x, T, t)) = Abs (x, T, go (d + 1) t)
-      | go d (t $ u) = go d t $ go d u
-      | go _ t = t;
-  in go 0 end;
+fun shtyenv tys =
+  Vartab.fold (fn ((n, i), (_, T)) => fn s => s ^ "?" ^ n ^ string_of_int i ^ "::=" ^ shT T ^ " ")
+    tys "";
+
+fun show_outcome (NO s) = s
+  | show_outcome (OK (tys, tms)) = "ACCEPT  " ^ shenv tms ^ shtyenv tys;
+
+(*The substitution the contract prescribes -- a binding dropped into a position
+  under n binders is lifted by n -- is `PLPR_Pattern.subst_term', so the check
+  below exercises the shipped function rather than a private reimplementation of
+  it.  Plain `Envir.subst_term' does NOT lift and would silently capture.*)
 
 (*Soundness, oracle-free and always applicable: put the stored bindings back into
   the pattern and compare literally with the object.  A binding that points at
   the wrong variable fails here without anyone having to say what the right
-  answer was.*)
-fun sound bvs pat obj tms =
+  answer was.
+
+  Compared in the module's OWN representation -- loose `Bound's, not `Free's.
+  Substituting the contextual bound variables away is the operation this fork
+  exists to avoid, and doing it here would also hide two things: a binding that
+  ran past the end of `bvs' (`Term.subst_bounds' silently decrements those) and a
+  collision between a `bvs' name and a `Free' of the same name.
+
+  It hands back what it compared, so the diagnostic cannot drift from the
+  judgement -- which is exactly how the two used to disagree.*)
+fun sound pat obj (tys, tms) =
   let
-    val lhs = close bvs (subst_lifted tms pat)
-    val rhs = close bvs obj
-  in sh (Envir.beta_eta_contract lhs) = sh (Envir.beta_eta_contract rhs) end;
+    val got = sh (Envir.beta_eta_contract (PLPR_Pattern.subst_term (tys, tms) pat))
+    val want = sh (Envir.beta_eta_contract obj)
+  in if got = want then NONE else SOME (got, want) end;
+
+(*The stored numbering is defined relative to the position `match' was called at,
+  so putting the whole problem one binder deeper must leave `tenv' untouched.
+  Oracle-free, applies to every sample including the ones the kernel cannot
+  adjudicate, and it is the executable form of the storage convention itself.*)
+fun deepen t = qq $ Abs ("d", a, Term.incr_boundvars 1 t);
 \<close>
 
 subsection \<open>The corpus\<close>
@@ -233,6 +266,27 @@ val corpus : sample list =
    obj = qq $ Abs ("z", a, pp $ Bound 2 $ Bound 0),
    expect = Accept "?Q0:=(%z. (%m. ((pp B0) B1))) ", use = Consult},
 
+  (*---- family 3 continued: `is' a PERMUTATION of the entered binders rather
+         than a subset of them.  `downto0' fails on any permutation that is not
+         descending, so this reaches the slow path with every index bound by
+         `mkabs' -- the branch where the membership test and the discarded
+         `j < diff' test agree.  3c keeps nothing, 3d additionally keeps a
+         contextual bound variable, which is what makes the arithmetic branch
+         run beside the `idx' one. ----*)
+  {name = "3c green witness: is is a permutation of the entered binders",
+   bvs = c1, fb = K_true,
+   pat = qq $ Abs ("u1", a, qq $ Abs ("u2", a, vQ $ Bound 0 $ Bound 1)),
+   rhs = vQ $ aa $ aa,
+   obj = qq $ Abs ("u1", a, qq $ Abs ("u2", a, pp $ Bound 1 $ Bound 0)),
+   expect = Accept "?Q0:=(%u2. (%u1. ((pp B0) B1))) ", use = Consult},
+
+  {name = "3d permutation, and the binding also keeps a context variable",
+   bvs = c1, fb = K_true,
+   pat = qq $ Abs ("u1", a, qq $ Abs ("u2", a, vQ $ Bound 0 $ Bound 1)),
+   rhs = vQ $ aa $ aa,
+   obj = qq $ Abs ("u1", a, qq $ Abs ("u2", a, pp $ Bound 1 $ (pp $ Bound 0 $ Bound 2))),
+   expect = Accept "?Q0:=(%u2. (%u1. ((pp B0) ((pp B1) B2)))) ", use = Escapes},
+
   (*---- family 4: the first-order fallback.  `?P aa' makes ints_of raise
          Pattern, so the whole match restarts in first_order_match; the repeated
          `?x' then exercises change (4). ----*)
@@ -268,6 +322,56 @@ val corpus : sample list =
    rhs = vP $ Bound 1,
    obj = pp $ Bound 0 $ Bound 1,
    expect = Accept "?P0:=(%m. ((pp B1) B0)) ", use = Escapes},
+
+  (*---- The four below were added after mutation testing showed that reverting
+         several of the five changes left the corpus entirely green. ----*)
+
+  (*`red' only ever peels an `Abs' when the stored binding was built by `mkabs',
+    i.e. when BOTH occurrences carry arguments.  Without that, `jn' stays empty,
+    `nth jn' never succeeds and the `- length jn' term never does any work.  The
+    two occurrences also sit at different depths, so `length jn' and `diff' do
+    not cancel.  The first occurrence additionally takes the `downto0' fast path,
+    which nothing else in the corpus reaches.*)
+  {name = "X1 red peels a stored Abs: both occurrences carry arguments, different depths",
+   bvs = c1, fb = K_true,
+   pat = s2 $ Abs ("u", a, vP $ Bound 0) $ Abs ("u", a, qq $ Abs ("w", a, vP $ Bound 1)),
+   rhs = qq $ vP,
+   obj = s2 $ Abs ("u", a, pp $ Bound 0 $ Bound 1)
+            $ Abs ("u", a, qq $ Abs ("w", a, pp $ Bound 1 $ Bound 2)),
+   expect = Accept "?P0:=(%u. ((pp B0) B1)) ", use = Escapes},
+
+  (*The first-order twin of 1a.  `?P aa' makes `ints_of' raise `Pattern', so the
+    whole match restarts in `first_order_match'; the two occurrences of `?x' then
+    name DIFFERENT contextual bound variables and must be refused.  This is the
+    only direction that turns a `true' into a `false', i.e. the only one that can
+    make a reasoner set shrink.*)
+  {name = "X2 first-order fallback, repeated schematic naming different context variables",
+   bvs = i_m, fb = K_true,
+   pat = rr $ (vP $ aa) $ vx $ (qq $ Abs ("z", a, ss $ vx)),
+   rhs = ss $ vx,
+   obj = rr $ (gg $ aa) $ (ff $ Bound 0) $ (qq $ Abs ("z", a, ss $ (ff $ Bound 2))),
+   expect = Reject, use = Consult},
+
+  (*The `escaping' gate on the first-order path -- the previous round's fix, which
+    had no regression witness at all.  It is also what makes the negative shift in
+    that path safe: with the gate defeated, the store produces `Bound (~1)'.*)
+  {name = "X3 first-order fallback, the escaping gate must refuse an entered binder",
+   bvs = i_m, fb = K_true,
+   pat = rr $ (vP $ aa) $ aa $ (qq $ Abs ("z", a, ss $ vx)),
+   rhs = ss $ vx,
+   obj = rr $ (gg $ aa) $ aa $ (qq $ Abs ("z", a, ss $ (ff $ Bound 0))),
+   expect = Reject, use = Consult},
+
+  (*The entered binder has a type of its own, so `fastype_of1' is asked a question
+    it can get wrong: reading the SHIFTED term there yields `'b' where `'a' is
+    required and the match collapses to a refusal.  Nothing else in the corpus can
+    see that -- every other sample is uniformly typed.*)
+  {name = "X4 first-order fallback, entered binder of a different type",
+   bvs = i_m, fb = K_true,
+   pat = rr $ (vP $ aa) $ aa $ (qb $ Abs ("z", b, vy)),
+   rhs = vy,
+   obj = rr $ (gg $ aa) $ aa $ (qb $ Abs ("z", b, Bound 1)),
+   expect = Accept "?P0:=gg ?y0:=B0 ", use = Escapes},
 
   {name = "7b control: binding would keep a variable the caller forbade",
    bvs = i_m_o, fb = not_o,
@@ -326,13 +430,24 @@ fun check ({name, bvs, fb, pat, rhs, obj, expect, use} : sample) =
 
     val sound_err =
       (case got of
-         OK tms =>
-           if sound bvs pat obj tms then []
-           else ["unsound:  the stored binding does not reproduce the object\n" ^
-                 "             pattern instantiated = " ^
-                 sh (Envir.beta_eta_contract (close bvs (Envir.subst_term (Vartab.empty, tms) pat))) ^
-                 "\n             object              = " ^ sh (close bvs obj)]
+         OK env =>
+           (case sound pat obj env of
+              NONE => []
+            | SOME (lhs, rhs') =>
+                ["unsound:  the stored binding does not reproduce the object\n" ^
+                 "             pattern instantiated = " ^ lhs ^
+                 "\n             object              = " ^ rhs' ^
+                 "\n             (contextual bound variables shown as B<i>; bvs = " ^
+                 commas (map fst bvs) ^ ", head innermost)"])
        | NO _ => []);
+
+    (*the storage convention, machine-checked: one binder deeper, same `tenv'*)
+    val deeper_err =
+      let val deep_s = show_outcome (plpr fb bvs (deepen pat, deepen obj)) in
+        if deep_s = got_s then []
+        else ["depth:    putting the whole problem one binder deeper changed the result\n" ^
+              "             here  " ^ quote got_s ^ "\n             deeper " ^ quote deep_s]
+      end;
 
     val oracle_err =
       (case use of
@@ -361,7 +476,7 @@ fun check ({name, bvs, fb, pat, rhs, obj, expect, use} : sample) =
                     | _ => true)
            end);
 
-    val errs = outcome_err @ sound_err @ oracle_err;
+    val errs = outcome_err @ sound_err @ deeper_err @ oracle_err;
   in (name, errs, got_s, control_differs) end;
 
 local
