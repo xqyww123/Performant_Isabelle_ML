@@ -66,8 +66,13 @@ val s2 = Free ("s2", (a --> a) --> (a --> a) --> a);
   type instantiation stays empty and `typ_match' can never disagree*)
 val b = TFree ("'b", []);
 val qb = Free ("qb", (b --> a) --> a);
+val kb = Free ("kb", b --> a);
+val tv = TVar (("'t", 0), []);
+val ffT = Free ("ff", tv --> tv);
+val vxT = Var (("xt", 0), tv);
 val vx = Var (("x", 0), a);
 val vy = Var (("y", 0), a);
+val vxb = Var (("xb", 0), b);
 val vP = Var (("P", 0), a --> a);
 val vQ = Var (("Q", 0), a --> a --> a);
 
@@ -202,7 +207,13 @@ text \<open>
 
 ML \<open>
 datatype expect = Accept of string | Reject;
-datatype oracle_use = Consult | Escapes;
+(*`ConsultControl' additionally demands that the deliberately broken control
+  oracle DISAGREE here.  Without such a demand the control is computed, counted
+  and then dropped: it could fall to zero and the suite would still say "all
+  pass".  Only a sample whose object mentions a contextual bound variable
+  underneath a binder can carry it -- elsewhere the two materialisations
+  coincide and the demand would be unsatisfiable.*)
+datatype oracle_use = Consult | ConsultControl | Escapes;
 
 type sample =
   {name: string, bvs: (string * typ) list, fb: int -> bool,
@@ -224,7 +235,7 @@ val corpus : sample list =
    pat = pp $ vx $ (qq $ Abs ("z", a, ss $ vx)),
    rhs = ss $ vx,
    obj = pp $ (ff $ Bound 1) $ (qq $ Abs ("z", a, ss $ (ff $ Bound 1))),
-   expect = Reject, use = Consult},
+   expect = Reject, use = ConsultControl},
 
   {name = "1b under-accept: two occurrences, same context variable",
    bvs = i_m, fb = K_true,
@@ -286,6 +297,30 @@ val corpus : sample list =
    rhs = vQ $ aa $ aa,
    obj = qq $ Abs ("u1", a, qq $ Abs ("u2", a, pp $ Bound 1 $ (pp $ Bound 0 $ Bound 2))),
    expect = Accept "?Q0:=(%u2. (%u1. ((pp B0) ((pp B1) B2)))) ", use = Escapes},
+
+  (*The `escaping' gate on the HIGHER-ORDER path, `null is' branch.  Sample X3 is
+    its first-order twin, but X3 has to put `?P aa' in the pattern to force the
+    fallback, which is exactly what steers it away from here.  Defeat this gate
+    and the store yields `?x := ff (Bound (~1))' -- a negative de Bruijn index,
+    well past what any consumer can survive, and nothing else in the corpus
+    notices.*)
+  {name = "X5 higher-order null-is: the escaping gate must refuse an entered binder",
+   bvs = c1, fb = K_true,
+   pat = qq $ Abs ("z", a, ss $ vx),
+   rhs = ss $ vx,
+   obj = qq $ Abs ("z", a, ss $ (ff $ Bound 0)),
+   expect = Reject, use = Consult},
+
+  (*A schematic TYPE variable, so that the type instantiation is not empty for
+    once.  Every other sample is built from two `TFree's, so `typ_match' has
+    nothing to record and the whole type half of the result is vacuously equal
+    however it is computed.*)
+  {name = "X6 a schematic type variable, so the type instantiation is exercised",
+   bvs = c1, fb = K_true,
+   pat = ffT $ vxT,
+   rhs = vxT,
+   obj = ff $ (gg $ Bound 0),
+   expect = Accept "?xt0:=(gg B0) ?'t0::='a ", use = Escapes},
 
   (*---- family 4: the first-order fallback.  `?P aa' makes ints_of raise
          Pattern, so the whole match restarts in first_order_match; the repeated
@@ -394,25 +429,79 @@ text \<open>
 ML \<open>
 (*A rule whose right-hand side repeats an abstraction from its left-hand side --
   the shape a self-looping simp rule has, and the shape `looping_simp' asks about.
-  Both occurrences sit one binder deep, so the answer depends on the stored
-  binding being numbered from the call site.*)
-val sub_pat = s2 $ Abs ("u", a, vx) $ Abs ("u", a, vx);
-val sub_obj = ff $ (s2 $ Abs ("u", a, ff $ Bound 1) $ Abs ("u", a, ff $ Bound 1));
+  The two occurrences sit at DIFFERENT depths: with both equally deep the store
+  side and the compare side of this fix cancel each other, and the sample then
+  passes on completely unmodified code -- witnessing only that the changes agree
+  with one another, not that either is right.*)
+val sub_pat = s2 $ Abs ("u", a, vx) $ Abs ("u", a, qq $ Abs ("w", a, vx));
+val sub_obj = ff $ (s2 $ Abs ("u", a, ff $ Bound 1)
+                       $ Abs ("u", a, qq $ Abs ("w", a, ff $ Bound 2)));
 
-val hit = PLPR_Pattern.matches_subterm_of thy c1 sub_pat sub_obj;
-val found = PLPR_Pattern.find_matching_subterms thy c1 sub_pat sub_obj;
+(*Same bucketing as `plpr'.  Without it an exception out of either walker aborts
+  the whole theory and not one of the samples above gets to report -- reproduced
+  with a walker that does not accumulate `bvs' at all.*)
+datatype 'a caught = Got of 'a | Threw of string;
 
-val want_found = sh (close c1 (s2 $ Abs ("u", a, ff $ Bound 1) $ Abs ("u", a, ff $ Bound 1)));
+fun catching f =
+  Got (f ())
+  handle Pattern.MATCH => Threw "let Pattern.MATCH escape"
+       | Pattern.Unif => Threw "leaked Pattern.Unif"
+       | Pattern.Pattern => Threw "leaked Pattern.Pattern"
+       | Subscript => Threw "leaked Subscript"
+       | TERM (m, _) => Threw ("raised TERM " ^ m)
+       | TYPE (m, _, _) => Threw ("raised TYPE " ^ m);
+
+val hit = catching (fn () => PLPR_Pattern.matches_subterm_of thy c1 sub_pat sub_obj);
+
+(*The same shape through the other walker.  Rebuilding this family cost
+  `find_matching_subterms' its only witness for the depth arithmetic -- the shape
+  below exercises the walker's own `bvs', not the arithmetic -- so it is asked
+  both questions rather than one.*)
+val deep_found = catching (fn () => PLPR_Pattern.find_matching_subterms thy c1 sub_pat sub_obj);
+val want_deep = "((s2 (%u. (ff c))) (%u. (qq (%w. (ff c)))))";
+
+(*A second shape, for the `bvs' the walkers build themselves.  Here the match is
+  found only AFTER descending through a binder, so the answer depends on which
+  entry a loose `Bound' is attributed to -- and `find_matching_subterms' closes
+  its result over `bvs', which puts that attribution in the returned NAME.  With
+  the accumulation reversed the same subterm comes back naming the wrong
+  variable.*)
+val walk_pat = gg $ vx;
+val walk_obj = qq $ Abs ("z", a, ff $ (gg $ Bound 1));
+val walked = catching (fn () => PLPR_Pattern.find_matching_subterms thy c1 walk_pat walk_obj);
+val want_walked = "(gg c)";
+
+(*The same question for `matches_subterm_of', which only yields a bool: there the
+  attribution can only be observed through the types, so the entered binder and
+  the contextual bound variable are given different ones and the match is made to
+  hinge on a bare `Bound'.  It is reached only after descending one binder, and
+  succeeds only if that `Bound' is attributed to the `'b' entry.*)
+val typed_pat = vxb;
+val typed_obj = qq $ Abs ("z", a, kb $ Bound 1);
+val typed_hit = catching (fn () => PLPR_Pattern.matches_subterm_of thy [("c", b)] typed_pat typed_obj);
+
+fun expect_one what want got =
+  (case got of
+     Threw e => [what ^ " " ^ e]
+   | Got [t] => if sh t = want then []
+                else [what ^ " returned " ^ sh t ^ "\n      want " ^ want]
+   | Got ts => [what ^ " returned " ^ string_of_int (length ts) ^
+                " subterms, expected 1: " ^ commas (map sh ts)]);
+
+fun expect_hit what why got =
+  (case got of
+     Threw e => [what ^ " " ^ e]
+   | Got true => []
+   | Got false => [what ^ " missed a subterm that matches\n      " ^ why]);
 
 val subterm_errors =
-  (if hit then []
-   else ["matches_subterm_of missed a subterm that matches\n" ^
-         "      pattern = " ^ sh sub_pat ^ "\n      object  = " ^ sh sub_obj]) @
-  (case found of
-     [t] => if sh t = want_found then []
-            else ["find_matching_subterms returned " ^ sh t ^ "\n      want " ^ want_found]
-   | ts => ["find_matching_subterms returned " ^ string_of_int (length ts) ^
-            " subterms, expected 1"]);
+  expect_hit "matches_subterm_of" ("pattern = " ^ sh sub_pat ^ "\n      object  = " ^ sh sub_obj) hit @
+  expect_one "find_matching_subterms" want_deep deep_found @
+  expect_one "find_matching_subterms (walker bvs)" want_walked walked @
+  expect_hit "matches_subterm_of (walker bvs)"
+    ("pattern = " ^ sh typed_pat ^ "\n      object  = " ^ sh typed_obj ^
+     "\n      it succeeds only if the walker attributes the loose Bound to the 'b entry")
+    typed_hit;
 \<close>
 
 subsection \<open>Running it\<close>
@@ -452,7 +541,7 @@ fun check ({name, bvs, fb, pat, rhs, obj, expect, use} : sample) =
     val oracle_err =
       (case use of
          Escapes => []
-       | Consult =>
+       | _ =>
            let
              val k = kernel (bvs, pat, rhs, obj);
              val rewrote = is_some k;
@@ -467,7 +556,7 @@ fun check ({name, bvs, fb, pat, rhs, obj, expect, use} : sample) =
     val control_differs =
       (case use of
          Escapes => NONE
-       | Consult =>
+       | _ =>
            let val good = kernel (bvs, pat, rhs, obj)
                val bad = kernel_blind (bvs, pat, rhs, obj)
            in SOME (case (good, bad) of
@@ -476,7 +565,14 @@ fun check ({name, bvs, fb, pat, rhs, obj, expect, use} : sample) =
                     | _ => true)
            end);
 
-    val errs = outcome_err @ sound_err @ deeper_err @ oracle_err;
+    val control_err =
+      (case (use, control_differs) of
+         (ConsultControl, SOME false) =>
+           ["control:  the deliberately broken oracle agreed with the good one, so" ^
+            " this sample is not exercising the oracle at all"]
+       | _ => []);
+
+    val errs = outcome_err @ sound_err @ deeper_err @ oracle_err @ control_err;
   in (name, errs, got_s, control_differs) end;
 
 local
