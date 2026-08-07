@@ -62,21 +62,76 @@ fun encode_type (Type (c, Ts)) = Term.list_comb (Const (c, dummyT), map encode_t
   Abstractions are encoded as CombK :: AtomK "\<lambda>" :: keys(body),
     i.e. virtual applications Const("\<lambda>") $ body.
 *)
-fun add_key_of_terms (t, cs) =
-  let fun rands (f$t, cs) = CombK :: rands (f, add_key_of_terms(t, cs))
+(*Eta-contraction is not stable under instantiation: a pattern that cannot contract
+  may have instances that can, so the stored key keeps a lambda arc the query key has
+  lost and the net reports no candidate for a rule that matches.  Upstream avoids
+  this by making every abstraction a wildcard (net.ML:50-51); this does it only where
+  needed.  Over-reporting danger is safe -- it only costs discrimination -- and all
+  three conjuncts are load-bearing: without `has_var', `%x. G (F x) x' is misjudged.
+
+  PRECONDITION: the term is beta-normal.  The front-rigid branch argues that a
+  substitution cannot erase `x' from a front holding no schematic, which is false on
+  a beta redex.  The four entry points run `norm' first; the exported `key_of_term'
+  and `insert' do not.
+
+  Edit the front-rigid branch last: it is the only clause resting on a negative
+  property rather than an impossibility, it is the one already broken once, and
+  random testing reaches it in 0.05% of verdicts.  Rationale and measurements:
+  INET_FIX_PLAN.md.*)
+fun may_unify_typ (T, U) =
+      T = dummyT orelse U = dummyT orelse
+      (case (T, U) of
+          (TVar _, _) => true
+        | (_, TVar _) => true
+        | (Type (a, Ts), Type (b, Us)) =>
+            a = b andalso length Ts = length Us andalso forall may_unify_typ (Ts ~~ Us)
+        | (TFree (a, _), TFree (b, _)) => a = b
+        | _ => false);
+
+fun ftype (Ts, t) = (fastype_of1 (Ts, t) handle TERM _ => dummyT | General.Subscript => dummyT);
+fun btype (Ts, k) = (nth Ts k handle General.Subscript => dummyT);
+
+fun has_var t = Term.exists_subterm is_Var t;
+
+fun may_be_app_ending_in (Ts, t, k) =
+      Term.loose_bvar1 (t, k) andalso
+      (case t of
+          Abs (_, T, b) => may_be_app_ending_in (T::Ts, b, 0) andalso Term.loose_bvar1 (b, k+1)
+        | _ => (case strip_comb t of
+                   (Var _, _) => true
+                 | (_, []) => false
+                 | (h, args) =>
+                     let val front = Term.list_comb (h, take (length args - 1) args)
+                     in may_reduce_to_bound (Ts, List.last args, k) andalso
+                        (not (Term.loose_bvar1 (front, k)) orelse has_var front)
+                     end))
+and may_reduce_to_bound (Ts, t, k) =
+      Term.loose_bvar1 (t, k) andalso
+      (case t of
+          Bound _ => true
+        | Abs (_, T, b) => may_be_app_ending_in (T::Ts, b, 0) andalso Term.loose_bvar1 (b, k+1)
+        | _ => is_Var (head_of t) andalso may_unify_typ (ftype (Ts, t), btype (Ts, k)));
+
+(*The abstraction \<open>\<lambda>x. body\<close> may lose its binder under some instantiation.*)
+fun eta_unstable (Ts, body) = has_var body andalso may_be_app_ending_in (Ts, body, 0);
+
+fun add_key_of_terms (Ts, t, cs) =
+  let fun rands (f$t, cs) = CombK :: rands (f, add_key_of_terms(Ts, t, cs))
         | rands (Const(\<^const_name>\<open>Pure.type\<close>, \<^Type>\<open>itself T\<close>), cs) =
-                    CombK :: AtomK "T" :: add_key_of_terms (encode_type T, cs)
+                    CombK :: AtomK "T" :: add_key_of_terms (Ts, encode_type T, cs)
         | rands (Const(c,_), cs) = AtomK c :: cs
         | rands (Free(c,_),  cs) = AtomK c :: cs
         | rands (Bound i,  cs)   = AtomK (Name.bound i) :: cs
   in case head_of t of
       Var _ => VarK :: cs
-    | Abs (_, _, body) => CombK :: AtomK "\<lambda>" :: add_key_of_terms(body, cs)
+    | Abs (_, T, body) =>
+        if eta_unstable (T::Ts, body) then VarK :: cs
+        else CombK :: AtomK "\<lambda>" :: add_key_of_terms(T::Ts, body, cs)
     | _     => rands(t,cs)
   end;
 
 (*convert a term to a list of keys*)
-fun key_of_term t = add_key_of_terms (t, []);
+fun key_of_term t = add_key_of_terms ([], t, []);
 
 (*beta-eta normalize if needed*)
 fun norm t =
