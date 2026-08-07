@@ -101,9 +101,14 @@
       condition (a) and for the loose-Bound bindings contract of the PLPR pattern matcher
       (Phi_Logic_Programming_Reasoner/library/pattern.ML:26-30, NOT Pure) --
       do not remove it.)
-   2. it goes under a binder with `Variable.next_bound' + `Term.used_free' + its own
-      `open_abs' rather than `variant_absfree'; see `dest_abs' for why each of the
-      obvious alternatives is wrong.
+   2. going under a binder REWRITES NOTHING: the term layer pushes the binder onto
+      a `bvs' list threaded through the traversal and consumed by the matcher
+      (`PLPR_Pattern.match') and the substituter (`PLPR_Pattern.subst_term', which
+      lifts each binding by its landing depth), where `Pattern.rewrite_term' opens
+      the binder with `variant_absfree' and re-abstracts afterwards.  Opening is
+      what silently skipped every rewrite whose binding contained a loose `Bound'
+      and let the first-order fallback capture one under a rule-supplied binder;
+      threading `bvs' makes those positions rewritable and capture-free.
 
    (An earlier third deviation -- "a beta redex is not a rewrite step" -- was
    withdrawn 2026-08: it made rewrites that exist only in the beta normal form
@@ -166,11 +171,13 @@ sig
 
   (* The same, at the term level: one step at this node, `NONE' if no rule applies.
      `single_step_rewrite_term' is `single_step_rewrite_conv' with `get_first' in
-     place of `Conv.first_conv', over the same net and the same candidates. *)
+     place of `Conv.first_conv', over the same net and the same candidates.
+     `bvs' types the loose `Bound's of the node; see the loose-bound contract at
+     the term entry points below. *)
   val single_step_rewrite_term:
-    (Proof.context -> 'a -> term -> term option) -> 'a iNet.net ->
-    Proof.context -> term -> term option
-  val rewrs_net_term: rules -> Proof.context -> term -> term option
+    (Proof.context -> 'a -> bvs -> term -> term option) -> 'a iNet.net ->
+    Proof.context -> bvs -> term -> term option
+  val rewrs_net_term: rules -> Proof.context -> bvs -> term -> term option
 
   (* SKELETONS.  A skeleton is a term of the same shape as the right-hand side of
      the equation a step produced, with a `Var' wherever that position was filled
@@ -191,7 +198,7 @@ sig
   val skel_body: skel -> skel
 
   type skel_conv = cterm -> thm * skel
-  type skel_term = term -> (term * skel) option
+  type skel_term = bvs -> term -> (term * skel) option
   val rewr_skel_conv: thm -> skel_conv
   val single_step_rewrite_skel_conv:
     (Proof.context -> 'a -> skel_conv) -> 'a iNet.net -> Proof.context -> skel_conv
@@ -260,14 +267,15 @@ sig
   val no_check: options          (*every guard off -- see the note at its definition*)
   val bottom_fixpoint_conv: options -> (Proof.context -> conv) -> Proof.context -> conv
   val bottom_fixpoint_term:
-    options -> (Proof.context -> term -> term option) -> Proof.context -> term -> term
+    options -> (Proof.context -> bvs -> term -> term option) ->
+    Proof.context -> bvs -> term -> term
 
   (* the same two traversals, given a step that also hands back a skeleton: the
      subtrees the skeleton marks as holes are neither descended into nor rewritten
      at.  The skeleton is taken ON TRUST; see the note above. *)
   val bottom_fixpoint_skel_conv: options -> (Proof.context -> skel_conv) -> Proof.context -> conv
   val bottom_fixpoint_skel_term:
-    options -> (Proof.context -> skel_term) -> Proof.context -> term -> term
+    options -> (Proof.context -> skel_term) -> Proof.context -> bvs -> term -> term
 
   (* TEST-ONLY -- the switch the correctness comparison is built on.  `Reference' is
      the traversal as it was before skeletons existed, PLUS the same beta clauses
@@ -285,9 +293,10 @@ sig
   val bottom_fixpoint_conv_mode:
     mode -> options -> (Proof.context -> conv) -> Proof.context -> conv
   val bottom_fixpoint_term_mode:
-    mode -> options -> (Proof.context -> term -> term option) -> Proof.context -> term -> term
+    mode -> options -> (Proof.context -> bvs -> term -> term option) ->
+    Proof.context -> bvs -> term -> term
   val rewrite_conv_mode: mode -> options -> rules -> Proof.context -> conv
-  val rewrite_term_mode: mode -> options -> rules -> Proof.context -> term -> term
+  val rewrite_term_mode: mode -> options -> rules -> Proof.context -> bvs -> term -> term
 
   (* proof-producing entry points.  With an empty rule set these are NOT the
      identity: beta redexes are still contracted. *)
@@ -296,28 +305,37 @@ sig
   val rewrite_cterm: rules -> Proof.context -> cterm -> cterm
   val rewrite_rule: rules -> Proof.context -> thm -> thm
 
-  (* term-level entry point: NO PROOF.  For callers that cannot use the conv layer
+  (* term-level entry points: NO PROOF.  For callers that cannot use the conv layer
      because `Thm.cterm_of' would reject their term, and for callers that simply do
      not want a theorem.
 
-     LOOSE BOUND VARIABLES.  Descending under a binder replaces the bound variable
-     by a fresh free (`dest_abs' below), so a pattern variable cannot capture a
-     binder this traversal walked past.  A loose `Bound' that was ALREADY loose in
-     the input is a different matter: it is ordinary material to the matcher, so a
-     rule whose right-hand side puts a hole under a NEW binder can capture it.  That
-     is measured in Skel_Loose and it is not a regression --
-     `Pattern.rewrite_term', and hence `Object_Logic.atomize_term', behaves the same
-     way.
+     Entry points for input terms containing loose `Bound's.  `bvs' lists the
+     binders the input sits under: entry k is the binder `Bound k' refers to,
+     so the innermost binder comes first.  Same convention as
+     `PLPR_Pattern.match'.  `rewrite_term net ctxt = rewrite_term_bvs net ctxt []'.
+
+     This is a garbage-in interface: the content of `bvs' is entirely the
+     caller's responsibility.  The single check performed is the entry assertion
+     that every loose `Bound' of the input has an entry in `bvs'.  It makes a
+     too-short `bvs' fail early with a clear message -- without it the failure
+     would surface later as an uncaught TERM thrown from deep inside the
+     matcher -- and it guards nothing else: a `bvs' in the wrong order cannot
+     be detected (the usual consequence is again silently skipped rewrites;
+     when the swapped binders share a type the swap is a complete no-op), and
+     a wrong type in `bvs' cannot be detected either (through the first-order
+     fallback of the matcher it can even yield an output `Term.type_of'
+     rejects).  Extra entries beyond the deepest loose `Bound' are harmless.
 
      A beta contraction at this layer uses `Term.subst_bound', which renumbers the
-     remaining loose `Bound's down by one.  That is correct here -- the binder is
-     genuinely consumed -- unlike in `open_abs' below, where the binder survives
-     and nothing may shift.
+     remaining loose `Bound's down by one.  That is correct -- the binder is
+     genuinely consumed.
 
-     With an empty rule set this is NOT the identity: beta redexes are still
+     With an empty rule set these are NOT the identity: beta redexes are still
      contracted. *)
   val rewrite_term: rules -> Proof.context -> term -> term
   val rewrite_term_options: options -> rules -> Proof.context -> term -> term
+  val rewrite_term_bvs: rules -> Proof.context -> bvs -> term -> term
+  val rewrite_term_bvs_options: options -> rules -> Proof.context -> bvs -> term -> term
 
 end;
 
@@ -371,20 +389,16 @@ fun single_step_rewrite_conv mk_conv net ctxt ct =
   `Conv.first_conv' is to a conversion: try the candidates in turn, keep the first
   that works.
 
-  WHY THE HANDLER, and it is not decoration.  `Conv.first_conv' is a chain of
-  `Conv.else_conv', which swallows THM/CTERM/TERM/TYPE from a failing candidate
-  (Pure/conv.ML:76); this swallows the two of those that can reach the term layer, so
-  that "this candidate did not apply" means the same thing in both layers.  It has to:
-  `Pattern.match' computes `fastype_of' of the object first, and `fastype_of' RAISES
-  on a bare `Bound' (term.ML:394) -- and a loose `Bound' is the whole reason this
-  layer exists.  `Pattern.rewrite_term' does throw on exactly this.
-
-  Caveat, and see NET_REWRITE_PLAN.md: the handler's granularity is the whole
-  candidate, so it also swallows a match that would have succeeded but could not be
-  typed.  Narrowing it is an open item.*)
-fun single_step_rewrite_term mk_rew net ctxt t =
-  get_first (fn x => mk_rew ctxt x t handle TERM _ => NONE | TYPE _ => NONE)
-    (iNet.match_term net t);
+  NO exception handler here, deliberately -- it used to swallow TERM/TYPE,
+  mirroring `Conv.else_conv'.  The matcher now types a loose `Bound' from `bvs',
+  so the one legitimate source of TERM (`fastype_of' on a bare `Bound',
+  term.ML:394) is gone, and a candidate that fails to MATCH already comes back as
+  NONE from `rewr_skel_term'.  What is left for an exception here to mean is a
+  broken invariant or garbage input, and that must be LOUD, not a silently
+  dropped candidate.  The conv layer keeps its catching `first' loop: there it is
+  `Conv.else_conv' semantics, not a loose-`Bound' workaround.*)
+fun single_step_rewrite_term mk_rew net ctxt bvs t =
+  get_first (fn x => mk_rew ctxt x bvs t) (iNet.match_term net t);
 
 (*`Thm.transfer'' so that rules stored context-free in theory data (the usual case
   for an incrementally maintained net) are usable in the current context.*)
@@ -395,7 +409,7 @@ val rewrs_net_conv = single_step_rewrite_conv (fn ctxt => Conv.rewr_conv o Thm.t
 
 type skel = term;
 type skel_conv = cterm -> thm * skel;
-type skel_term = term -> (term * skel) option;
+type skel_term = bvs -> term -> (term * skel) option;
 
 (*The wildcard skeleton and the projections, exactly as in Pure/more_pattern.ML:
   50-53.  `Bound 0' is the wildcard because it is the one term former that can never
@@ -480,39 +494,48 @@ fun rewr_skel_conv rule ct =
       then rhs else skel0;
   in (Thm.transitive rule4 beta, skel) end;
 
-(*The term-level twin.  `Pattern.match_rew' IS the term-level `rewr_conv': it
-  matches, instantiates, and hands back the renamed right-hand side -- which is
-  precisely the skeleton -- so matching and substitution are not rewritten here.  The
-  additions mirror `rewr_skel_conv': `Envir.beta_norm' on the result (because
-  `Thm.beta_conversion true' IS `Envir.beta_norm', thm.ML:1528, and the conv layer
-  applies it to every step), then the same three conditions.
+(*The term-level twin, rebuilt on the PLPR matcher so that a loose `Bound' in the
+  object is typed from `bvs' instead of raising.  What `Pattern.match_rew' used to
+  do here is reproduced piece by piece: `Term.rename_abs' (binder names from the
+  redex onto the right-hand side, whose result is precisely the skeleton),
+  `handle Pattern.MATCH => NONE' (an iNet candidate failing to match is the
+  NORMAL case, and `PLPR_Pattern.match' raises `Pattern.MATCH' on failure -- this
+  handler is load-bearing, and it is NOT the deleted TERM/TYPE one), and the
+  substitution -- `PLPR_Pattern.subst_term', which lifts each binding by its
+  landing depth (`Envir.subst_term' does not, and silent capture was the cost).
+  `fixed_bounds' is `K true' ALWAYS: every contextual binder is a fixed variable
+  to the matcher; anything else silently drops every rewrite whose binding
+  mentions one, so the choice is not exported.  The `Envir.beta_norm' and the
+  three conditions mirror `rewr_skel_conv' as before (`Thm.beta_conversion true'
+  IS `Envir.beta_norm', thm.ML:1528; `beta_norm' returns the IDENTICAL value when
+  there is nothing to contract, so `pointer_eq' answers condition (a) in constant
+  time, failing toward lost pruning only).
 
-  NOT DONE HERE, deliberately: `Thm.incr_indexes'.  `Conv.rewr_conv' renames the
-  rule's schematics apart from the term's at every application; `Pattern.match_rew'
-  does not, so a rule variable can be conflated with a schematic of the same name in
-  the input, and this includes TYPE variables (`Logic.incr_tvar').  Both are
-  properties `Pattern.rewrite_term' already has, and paying for an `incr_indexes' at
-  every candidate at every node is a real cost for a rule family this module already
-  documents as unsupported.  Recorded as a known cross-layer difference.*)
-fun rewr_skel_term thy rule t =
-  (case Pattern.match_rew thy t (Logic.dest_equals (Thm.prop_of rule)) of
-    NONE => NONE
-  | SOME (result, rhs) =>
-      let
-        (*`Envir.beta_norm' is `Same.commit (norm_term_same init)', which raises
-          `Same.SAME' when there is nothing to contract, so an unreduced result comes
-          back as the IDENTICAL value.  `pointer_eq' therefore answers condition (a)
-          in constant time.  If a future `beta_norm' ever rebuilt the term anyway,
-          this would answer "reduced" when nothing was, which costs pruning and
-          nothing else -- the failure direction is the safe one.*)
-        val result' = Envir.beta_norm result;
-        val lhs_t = #1 (Logic.dest_equals (Thm.prop_of rule));
-        val skel =
-          if pointer_eq (result, result')                             (*condition (a)*)
-            andalso not (has_extra_var (lhs_t, rhs))                  (*condition (b)*)
-            andalso not (lhs_not_first_order lhs_t)                   (*condition (c)*)
-          then rhs else skel0;
-      in SOME (result', skel) end);
+  Still NOT done here, deliberately: `Thm.incr_indexes'.  `Conv.rewr_conv' renames
+  the rule's schematics apart from the term's at every application; this function
+  does not, so a rule variable can be conflated with a schematic of the same name
+  in the input, and this includes TYPE variables (`Logic.incr_tvar').  Recorded as
+  a known cross-layer difference.*)
+fun rewr_skel_term thy rule bvs t =
+  let
+    val (lhs_t, rhs0) = Logic.dest_equals (Thm.prop_of rule);
+    val rhs = perhaps (Term.rename_abs lhs_t t) rhs0;
+  in
+    (case (SOME (PLPR_Pattern.match thy (K true) bvs (lhs_t, t)
+                   (Vartab.empty, Vartab.empty))
+           handle Pattern.MATCH => NONE) of
+      NONE => NONE
+    | SOME env =>
+        let
+          val result = PLPR_Pattern.subst_term env rhs;
+          val result' = Envir.beta_norm result;
+          val skel =
+            if pointer_eq (result, result')                           (*condition (a)*)
+              andalso not (has_extra_var (lhs_t, rhs))                (*condition (b)*)
+              andalso not (lhs_not_first_order lhs_t)                 (*condition (c)*)
+            then rhs else skel0;
+        in SOME (result', skel) end)
+  end;
 
 (*As `single_step_rewrite_conv' / `single_step_rewrite_term', for steps that carry a
   skeleton.  The conv version reproduces the exception behaviour of
@@ -530,10 +553,9 @@ fun single_step_rewrite_skel_conv mk_conv net ctxt ct =
               | TYPE _ => first cvs;
   in first (map (mk_conv ctxt) (iNet.match_term net (Thm.term_of ct))) end;
 
-(*the handler is the one explained at `single_step_rewrite_term'*)
-fun single_step_rewrite_skel_term mk_rew net ctxt t =
-  get_first (fn x => mk_rew ctxt x t handle TERM _ => NONE | TYPE _ => NONE)
-    (iNet.match_term net t);
+(*no handler, for the reason explained at `single_step_rewrite_term'*)
+fun single_step_rewrite_skel_term mk_rew net ctxt bvs t =
+  get_first (fn x => mk_rew ctxt x bvs t) (iNet.match_term net t);
 
 val rewrs_net_skel_conv =
   single_step_rewrite_skel_conv (fn ctxt => rewr_skel_conv o Thm.transfer' ctxt);
@@ -545,7 +567,8 @@ fun rewrs_net_skel_term net ctxt =
 (*the skeleton-free term step, for `bottom_fixpoint_term'*)
 fun rewrs_net_term net ctxt =
   single_step_rewrite_term
-    (fn ctxt' => fn rule => fn t => Option.map #1 (rewr_skel_term (Proof_Context.theory_of ctxt') rule t))
+    (fn ctxt' => fn rule => fn bvs => fn t =>
+      Option.map #1 (rewr_skel_term (Proof_Context.theory_of ctxt') rule bvs t))
     net ctxt;
 
 
@@ -576,7 +599,7 @@ exception DIVERGES of divergence * term;
 
 (*MESSAGE TEXT IS NOT FINAL -- see the report for wording candidates.  What matters
   and should survive any rewording: name the rules that are implicated and show the
-  terms that repeat, because this is read by an agent that has to act on it.*)
+  terms that repeat.*)
 fun string_of_divergence ctxt rules (d, t) =
   let
     val show = Syntax.string_of_term ctxt;
@@ -847,14 +870,32 @@ fun bottom_fixpoint_conv opts cv = bottom_fixpoint_conv_mode No_Skeleton opts cv
   conv layer.  Compare `go' above line for line: the guards are the same object, the
   skeleton discipline is the same three projections and the same `is_hole', and the
   order of business at a node -- descend, then step, then re-descend the result under
-  the new skeleton -- is the same.  What differs is only that nothing is proved.*)
-fun bottom_fixpoint_gen_term mode opts (step: Proof.context -> skel_term) ctxt0 t0 =
+  the new skeleton -- is the same.  What differs: nothing is proved, and the binder
+  bookkeeping is a threaded `bvs' list where the conv layer extends its context.
+  `ctxt0' itself no longer travels with the traversal -- it is captured once and
+  handed to the step unchanged, because nothing extends it any more.*)
+fun bottom_fixpoint_gen_term mode opts (step: Proof.context -> skel_term) ctxt0 bvs0 t0 =
   let
     val {before_step, after_step} = make_guard opts ctxt0 t0;
 
-    fun accounted_step ctxt t1 =
+    (*THE ENTRY ASSERTION -- the single check the loose-bound contract in the
+      signature promises: every loose `Bound' of the input has a `bvs' entry.
+      Every mode and skeleton variant passes through this function, so every
+      public term entry is covered.  `Fail', not TERM/TYPE: nothing downstream
+      may read it as "no rewrite here".*)
+    val _ =
+      (case filter (fn i => i >= length bvs0) (Term.loose_bnos t0) of
+        [] => ()
+      | is =>
+          raise Fail ("Merely_Rewrite: loose Bound " ^
+            commas (map (fn i => "B." ^ string_of_int i) is) ^
+            " without a bvs entry (bvs has " ^ string_of_int (length bvs0) ^
+            " entries); the caller owes rewrite_term_bvs one entry per binder \
+            \the input sits under"));
+
+    fun accounted_step bvs t1 =
       (before_step t1;
-       (case step ctxt t1 of
+       (case step ctxt0 bvs t1 of
          NONE => NONE
        | SOME (t2, skel') =>
            (*a step that changes nothing counts as no step, exactly as
@@ -862,136 +903,85 @@ fun bottom_fixpoint_gen_term mode opts (step: Proof.context -> skel_term) ctxt0 
            if t1 aconv t2 then NONE
            else (after_step (t1, t2); SOME (t2, skel'))));
 
-    (*Going under a binder: replace the bound variable by a fresh free, and put it
-      back afterwards.  Without this the body has a loose `Bound' in it and a pattern
-      variable could capture it.  This is what `variant_absfree' (more_pattern.ML:59)
-      and `Variable.dest_abs_cterm' (inside `Conv.abs_conv') do, but neither of them
-      can be used verbatim -- see the two notes below, one about the substitution and
-      one about where the fresh name comes from.
-
-      NOT `Variable.dest_abs'.  `Variable.dest_abs' opens the abstraction with
-      `Term.dest_abs_fresh', hence with `subst_bound', which also SHIFTS every other
-      loose `Bound' down by one; `abstract_over' on the way back does not shift them
-      up again, so a `Bound' that was already loose in the input comes back one level
-      too low -- and worse, it collides with the `Bound 0' that `abstract_over' is
-      about to introduce, so it silently starts pointing at this binder.  Measured
-      before the fix, in Skel_Loose L2f: `qq (%u. pp (ff aa) (Bound 1))' came out as
-      `qq (%u. pp (gg aa) (Bound 0))'.  `variant_absfree' in `Pattern.rewrite_term'
-      is built the same way and has the same behaviour.
-
-      `open_abs' therefore replaces `Bound 0' and leaves every other `Bound' exactly
-      as it was, which is the inverse of what `abstract_over' does.  On a term with
-      no loose bounds -- the normal case -- it is `subst_bound'.*)
-    fun open_abs v b =
-      let
-        fun go lev (Bound i) = if i = lev then v else Bound i
-          | go lev (Abs (a, T, t)) = Abs (a, T, go (lev + 1) t)
-          | go lev (t $ u) = go lev t $ go lev u
-          | go _ t = t;
-      in go 0 b end;
-
-    (*`Variable.next_bound', NOT `Variable.variant_fixes'.  The name has to be fresh
-      for the TERM, not merely for the context, because `abstract_over' on the way
-      back captures EVERY occurrence of it -- including a `Free' that was already in
-      the body, and including one that a rule's right-hand side brings in later,
-      which no amount of `declare_term' at the call site can anticipate.
-      `variant_fixes' searches the context and knows about neither.  `next_bound'
-      (variable.ML:320) hands out the `Name.bound' family -- `:000', `:001', names
-      the user cannot write and no rule can contain -- so both are closed by
-      construction.  This is also what the conv layer gets, via
-      `Variable.dest_abs_cterm'.
-
-      The `used_free' check is not redundant: `next_bound' looks at the context too,
-      so a term that literally contains `Free ":000"' would still be captured, and
-      silently.  The conv layer is loud about that case (`Fail: Bad context: clash of
-      fresh free for bound', variable.ML:673-676); this makes the term layer loud
-      too, rather than quietly wrong.*)
-    fun dest_abs ctxt (Abs (a, T, b)) =
-          let
-            val (v as Free (x, _), ctxt') = Variable.next_bound (a, T) ctxt;
-            val _ =
-              if Term.used_free x b then
-                raise Fail ("Merely_Rewrite: clash of fresh free for bound: " ^ quote x)
-              else ();
-          in (fn u => Abs (a, T, abstract_over (v, u)), open_abs v b, ctxt') end
-      | dest_abs _ t = raise TERM ("dest_abs", [t]);
-
     (*the step position, `accounted_step' behind a beta clause -- see the conv
       layer's `step_at' for what it catches and why the guards are charged*)
     fun step_at _ (t1 as Abs (_, _, body) $ u) =
           (before_step t1;
            let val t2 = Term.subst_bound (u, body); val _ = after_step (t1, t2)
             in SOME (t2, skel0) end)
-      | step_at ctxt t = accounted_step ctxt t;
+      | step_at bvs t = accounted_step bvs t;
 
     (*In the NONE branch below, `step_at's beta clause is provably dead: `sub'
       contracts a redex in its first clause, so a term `sub' returns NONE on is
       never a redex.  It is kept as an invariant guard, not live logic.*)
-    fun go skel ctxt t =
+    fun go skel bvs t =
       if is_hole skel then NONE
       else
-        (case sub skel ctxt t of
+        (case sub skel bvs t of
           SOME t1 =>
-            (case step_at ctxt t1 of
-              SOME (t2, skel') => SOME (perhaps (go skel' ctxt) t2)
+            (case step_at bvs t1 of
+              SOME (t2, skel') => SOME (perhaps (go skel' bvs) t2)
             | NONE => SOME t1)
         | NONE =>
-            (case step_at ctxt t of
-              SOME (t1, skel') => SOME (perhaps (go skel' ctxt) t1)
+            (case step_at bvs t of
+              SOME (t1, skel') => SOME (perhaps (go skel' bvs) t1)
             | NONE => NONE))
 
     (*the term-level `sub_conv_skel'; its first clause is the descent-position beta
       of more_pattern.ML:73-75 -- contract, then re-scan the contraction under
-      `skel0', and never descend into a redex's own subterms (call-by-name)*)
-    and sub _ ctxt (t1 as Abs (_, _, body) $ u) =
+      `skel0', and never descend into a redex's own subterms (call-by-name).
+      Going under a binder PUSHES it onto `bvs' and leaves the body untouched:
+      nothing is opened, nothing is re-abstracted, so there is no fresh name to
+      clash and nothing a rule-supplied binder could capture (the substituter
+      lifts by landing depth).*)
+    and sub _ bvs (t1 as Abs (_, _, body) $ u) =
           (before_step t1;
            let val t2 = Term.subst_bound (u, body); val _ = after_step (t1, t2)
-            in SOME (perhaps (go skel0 ctxt) t2) end)
-      | sub skel ctxt (t $ u) =
-          (case (go (skel_fun skel) ctxt t, go (skel_arg skel) ctxt u) of
+            in SOME (perhaps (go skel0 bvs) t2) end)
+      | sub skel bvs (t $ u) =
+          (case (go (skel_fun skel) bvs t, go (skel_arg skel) bvs u) of
             (SOME t', SOME u') => SOME (t' $ u')
           | (SOME t', NONE) => SOME (t' $ u)
           | (NONE, SOME u') => SOME (t $ u')
           | (NONE, NONE) => NONE)
-      | sub skel ctxt (t as Abs _) =
-          let val (abs, body, ctxt') = dest_abs ctxt t
-          in Option.map abs (go (skel_body skel) ctxt' body) end
+      | sub skel bvs (Abs (a, T, b)) =
+          Option.map (fn b' => Abs (a, T, b'))
+            (go (skel_body skel) ((a, T) :: bvs) b)
       | sub _ _ _ = NONE;
 
-    fun go_ref ctxt t =
-      (case sub_ref ctxt t of
+    fun go_ref bvs t =
+      (case sub_ref bvs t of
         SOME t1 =>
-          (case step_at ctxt t1 of
-            SOME (t2, _) => SOME (perhaps (go_ref ctxt) t2)
+          (case step_at bvs t1 of
+            SOME (t2, _) => SOME (perhaps (go_ref bvs) t2)
           | NONE => SOME t1)
       | NONE =>
-          (case step_at ctxt t of
-            SOME (t1, _) => SOME (perhaps (go_ref ctxt) t1)
+          (case step_at bvs t of
+            SOME (t1, _) => SOME (perhaps (go_ref bvs) t1)
           | NONE => NONE))
 
-    and sub_ref ctxt (t1 as Abs (_, _, body) $ u) =
+    and sub_ref bvs (t1 as Abs (_, _, body) $ u) =
           (before_step t1;
            let val t2 = Term.subst_bound (u, body); val _ = after_step (t1, t2)
-            in SOME (perhaps (go_ref ctxt) t2) end)
-      | sub_ref ctxt (t $ u) =
-          (case (go_ref ctxt t, go_ref ctxt u) of
+            in SOME (perhaps (go_ref bvs) t2) end)
+      | sub_ref bvs (t $ u) =
+          (case (go_ref bvs t, go_ref bvs u) of
             (SOME t', SOME u') => SOME (t' $ u')
           | (SOME t', NONE) => SOME (t' $ u)
           | (NONE, SOME u') => SOME (t $ u')
           | (NONE, NONE) => NONE)
-      | sub_ref ctxt (t as Abs _) =
-          let val (abs, body, ctxt') = dest_abs ctxt t
-          in Option.map abs (go_ref ctxt' body) end
+      | sub_ref bvs (Abs (a, T, b)) =
+          Option.map (fn b' => Abs (a, T, b')) (go_ref ((a, T) :: bvs) b)
       | sub_ref _ _ = NONE;
   in
-    perhaps (case mode of Reference => go_ref ctxt0 | _ => go skel0 ctxt0) t0
+    perhaps (case mode of Reference => go_ref bvs0 | _ => go skel0 bvs0) t0
   end;
 
 fun bottom_fixpoint_skel_term opts step = bottom_fixpoint_gen_term Skeleton opts step;
 
 fun bottom_fixpoint_term_mode mode opts rew =
   bottom_fixpoint_gen_term mode opts
-    (fn ctxt => fn t => Option.map (rpair skel0) (rew ctxt t));
+    (fn ctxt => fn bvs => fn t => Option.map (rpair skel0) (rew ctxt bvs t));
 
 fun bottom_fixpoint_term opts rew = bottom_fixpoint_term_mode No_Skeleton opts rew;
 
@@ -1014,7 +1004,9 @@ fun rewrite_conv net = rewrite_conv_options default_options net;
 fun rewrite_cterm net ctxt = Thm.rhs_of o rewrite_conv net ctxt;
 fun rewrite_rule net ctxt = Conv.fconv_rule (rewrite_conv net ctxt);
 
-fun rewrite_term_options opts net ctxt = rewrite_term_mode Skeleton opts net ctxt;
+fun rewrite_term_bvs_options opts net ctxt = rewrite_term_mode Skeleton opts net ctxt;
+fun rewrite_term_bvs net = rewrite_term_bvs_options default_options net;
+fun rewrite_term_options opts net ctxt = rewrite_term_bvs_options opts net ctxt [];
 fun rewrite_term net = rewrite_term_options default_options net;
 
 

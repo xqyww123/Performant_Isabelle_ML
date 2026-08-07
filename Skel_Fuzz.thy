@@ -374,14 +374,19 @@ ML \<open>
   stay well-typed relative to `bvs', because under the garbage-in contract of
   `rewrite_term_bvs' an ill-typed input is out of corpus scope.*)
 val bvs6 = map (fn i => ("z" ^ string_of_int i, natT)) (0 upto 5);
-fun loosen t =
+(*`nat_pos' tracks whether the current position is nat-typed: only there may a
+  subterm be replaced by a loose `Bound'.  Function positions and `Abs' arguments
+  are recursed into but never replaced -- in this grammar every non-`Abs'
+  argument position and every binder body is nat, so the flag is exact.*)
+fun loosen nat_pos t =
   (case t of
     u $ v =>
-      loosen u $
-      (if rand 4 = 0 andalso (case v of Abs _ => false | _ => true)
-       then Bound (rand 6) else loosen v)
-  | Abs (a, T, u) => Abs (a, T, loosen u)
-  | _ => if rand 5 = 0 then Bound (rand 6) else t);
+      loosen false u $
+      (case v of
+        Abs _ => loosen false v
+      | _ => if rand 4 = 0 then Bound (rand 6) else loosen true v)
+  | Abs (a, T, b) => Abs (a, T, loosen true b)
+  | _ => if nat_pos andalso rand 5 = 0 then Bound (rand 6) else t);
 
 fun fuzz_loose start n =
   let
@@ -393,7 +398,7 @@ fun fuzz_loose start n =
         val _ = srand (start + i);
         val rules = map gen_rule2 (1 upto (3 + rand 6));
         val net = Merely_Rewrite.make_rules rules;
-        val input = loosen (gen_term (4 + rand 3) []);
+        val input = loosen true (gen_term (4 + rand 3) []);
         fun run mode =
           Exn.capture (fn () =>
             Merely_Rewrite.rewrite_term_mode mode opts net ctxt0 bvs6 input) ();

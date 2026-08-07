@@ -62,17 +62,17 @@ val modes =
    ("no", Merely_Rewrite.No_Skeleton),
    ("skl", Merely_Rewrite.Skeleton)];
 
-(*a case run at the term layer, all three modes*)
-fun three label opts net input expect =
+(*a case run at the term layer, all three modes; `bvs' for loose-Bound inputs*)
+fun three label opts net bvs input expect =
   List.app (fn (mn, m) =>
-    let val got = outcome (fn () => Merely_Rewrite.rewrite_term_mode m opts net ctxt0 [] input)
+    let val got = outcome (fn () => Merely_Rewrite.rewrite_term_mode m opts net ctxt0 bvs input)
     in chk (label ^ " term/" ^ mn ^ ": got " ^ got ^ ", want " ^ expect) (got = expect) end)
     modes;
 
 (*a case run at both layers, all three modes each: six accounting points, one per
   combination of beta position, layer and mode -- the requirement of section 8.4b*)
 fun six label opts net input expect =
-  (three label opts net input expect;
+  (three label opts net [] input expect;
    List.app (fn (mn, m) =>
      let
        val got = outcome (fn () =>
@@ -125,12 +125,12 @@ val _ = six "P3 (%x y. pp x y) aa bb, empty rules" dflt no_rules
 
 (*4: term layer, loose Bound in the redex body: `subst_bound' must renumber the
   surviving loose Bound down by one -- hand-computed target*)
-val _ = three "P4 (%x. pp (ff B1) x) 2 + ff2" dflt r_ff
+val _ = three "P4 (%x. pp (ff B1) x) 2 + ff2" dflt r_ff [("z0", natT)]
           (Abs ("x", natT, pp $ (ff $ Bound 1) $ Bound 0) $ two)
           ("OK " ^ dump (pp $ (ff $ Bound 0) $ two));
 
 (*5: order probe: if the `subst_bound' arguments were swapped the output differs*)
-val _ = three "P5 (%x. pp x B1) aa + pp_ab" dflt r_ppab
+val _ = three "P5 (%x. pp x B1) aa + pp_ab" dflt r_ppab [("z0", natT)]
           (Abs ("x", natT, pp $ Bound 0 $ Bound 1) $ aa)
           ("OK " ^ dump (pp $ aa $ Bound 0));
 
@@ -218,9 +218,9 @@ ML \<open>
   terminates immediately (contract-before-descend), which is why `Thm.cterm_of'
   never sees these terms: they are not typeable and stay at the term layer.*)
 val om = Abs ("x", natT, Bound 0 $ Bound 0);
-val _ = three "P7a Omega, empty rules" (limit 20000) no_rules
+val _ = three "P7a Omega, empty rules" (limit 20000) no_rules []
           (om $ om) "DIVERGES Step_Limit";
-val _ = three "P7b (%z. aa) Omega, empty rules" (limit 20000) no_rules
+val _ = three "P7b (%z. aa) Omega, empty rules" (limit 20000) no_rules []
           (Abs ("z", natT, aa) $ (om $ om)) ("OK " ^ dump aa);
 \<close>
 

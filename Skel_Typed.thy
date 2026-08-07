@@ -24,7 +24,8 @@ axiomatization
   g0 :: "nat \<Rightarrow> nat \<Rightarrow> nat" and g1 :: "nat \<Rightarrow> nat \<Rightarrow> nat" and
   qh :: "(nat \<Rightarrow> nat) \<Rightarrow> nat" and
   qb :: "(bool \<Rightarrow> nat) \<Rightarrow> nat" and
-  pb :: "bool \<Rightarrow> nat"
+  pb :: "bool \<Rightarrow> nat" and
+  rr :: "(nat \<Rightarrow> nat) \<Rightarrow> nat"
 
 ML \<open>
 val ctxt0 = \<^context>;
@@ -99,10 +100,11 @@ val _ =
     (qbC $ Abs ("b", boolT, pbC $ Bound 0))
     (qbC $ Abs ("b", boolT, \<^term>\<open>n0\<close>));
 
-(*T2: a match whose bindings take one contextual binder of EACH type.  The
-  nat-typed material is Bound 1 seen through the bool binder: any traversal that
-  consults the wrong entry of its binder bookkeeping for it -- reversed order,
-  wrong type -- loses the rewrite (mutant M3's detector).*)
+(*T2: a match whose bindings take one contextual binder of EACH type through the
+  higher-order path.  NOTE (measured via mutant M3): the higher-order path does
+  NOT consult bvs for the bindings' types, so this sample does not detect binder
+  bookkeeping mutants -- T7/T8 do, through the first-order fallback.  It stays
+  as the basic dual-type binding/substitution sample.*)
 val r2 = rule (\<^term>\<open>g0\<close> $ V "x" natT $ V "y" natT)
               (\<^term>\<open>g1\<close> $ V "y" natT $ V "x" natT);
 val _ =
@@ -152,6 +154,50 @@ val r6 = rule (\<^term>\<open>g0\<close> $ (V "P" (natT --> natT) $ \<^term>\<op
 val t6 = \<^term>\<open>g0\<close> $ (\<^term>\<open>f0\<close> $ \<^term>\<open>n0\<close>) $ (\<^term>\<open>f0\<close> $ Bound 0);
 val e6_lifted = qhC $ Abs ("w", natT, \<^term>\<open>g0\<close> $ (\<^term>\<open>f0\<close> $ Bound 1) $ Bound 0);
 val _ = check_loose "T6(capture shape, now lifted)" [r6] [("x", natT)] t6 e6_lifted;
+
+(*T7: the position where the traversal's OWN bvs bookkeeping is actually
+  consumed -- found by mutant M2 slipping through T1-T6.  The matcher tracks
+  binders inside the matched region itself; the traversal's pushed entries are
+  consulted only when the FIRST-ORDER FALLBACK types a contextual Bound in a
+  binding.  A traversal that fails to push (M2) makes that type lookup raise
+  on an empty table instead of firing the rewrite.*)
+val r7 = rule (\<^term>\<open>g0\<close> $ (V "P" (natT --> natT) $ \<^term>\<open>n0\<close>) $ V "y" natT)
+              (\<^term>\<open>g1\<close> $ V "y" natT $ V "y" natT);
+val _ =
+  check "T7" [r7]
+    (qhC $ Abs ("u", natT, \<^term>\<open>g0\<close> $ (\<^term>\<open>f0\<close> $ \<^term>\<open>n0\<close>) $ Bound 0))
+    (qhC $ Abs ("u", natT, \<^term>\<open>g1\<close> $ Bound 0 $ Bound 0));
+
+(*T8: the PUSH-DIRECTION detector (mutant M3) -- found by M3 slipping through
+  T1-T7.  Reversal is a no-op under one binder (T7) and invisible to the
+  higher-order path (T2), so it takes TWO binders of DIFFERENT types plus the
+  first-order fallback: with the correct innermost-first bvs the fallback types
+  `Bound 0' as the inner nat binder and fires; with the order reversed it reads
+  the outer bool binder's type, the match fails, and the rewrite is silently
+  lost.*)
+val _ =
+  check "T8" [r7]
+    (qbC $ Abs ("b", boolT, qhC $ Abs ("u", natT,
+       \<^term>\<open>g0\<close> $ (\<^term>\<open>f0\<close> $ \<^term>\<open>n0\<close>) $ Bound 0)))
+    (qbC $ Abs ("b", boolT, qhC $ Abs ("u", natT,
+       \<^term>\<open>g1\<close> $ Bound 0 $ Bound 0)));
+
+(*T9: the GUARD-(c) detector (mutant M5) -- found by M5 surviving the fuzz:
+  guard (c) bites when the matcher ETA-EXPANDS the object (`mkabs' synthesises
+  the hole material), and the generator only ever builds literal Abs under the
+  binder heads, so the eta-contracted shape `qh f1' never occurs randomly.
+  Mirror of the measured counterexample in merely_rewrite.ML's condition-(c)
+  note: with (c) the skeleton degrades to the wildcard and the re-scan lets
+  `?F == f0' fire inside the synthesised material (and on the synthesised Abs
+  itself), reaching `rr f0'; without (c) the hole is skipped as if already
+  normalised and the output is stuck at `rr (%x. f1 x)'.*)
+val PV9 = V "P" (natT --> natT);
+val r9a = rule (qhC $ Abs ("u", natT, PV9 $ Bound 0)) (\<^term>\<open>rr\<close> $ PV9);
+val r9b = rule (V "F" (natT --> natT)) \<^term>\<open>f0\<close>;
+val _ =
+  check "T9" [r9a, r9b]
+    (qhC $ \<^term>\<open>f1\<close>)
+    (\<^term>\<open>rr\<close> $ \<^term>\<open>f0\<close>);
 \<close>
 
 end
