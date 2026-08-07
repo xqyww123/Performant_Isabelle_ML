@@ -7,7 +7,7 @@
    `report' to true to dump every sample instead of only the failures.
 
    WHAT IS BEING TESTED.  `PLPR_Pattern' is the upstream `Pure/pattern.ML'
-   algorithm with `binders' initialised to `bvs' -- the caller's context binders
+   algorithm with `binders' initialised to `bvs' -- the caller's contextual binders
    count as already entered -- plus one relaxation: a contextual bound variable
    the caller declares fixed through `fixed_bounds' may stay inside a binding
    stored into `tenv', which plain upstream forbids.  Terms stored into `tenv'
