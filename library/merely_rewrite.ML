@@ -1,0 +1,885 @@
+(* Rewriting to a fixpoint with rules indexed by a discrimination net (iNet).
+
+   THE NAME IS THE SPECIFICATION.  "Merely" is literal: pick candidate rules out of
+   an iNet, rewrite bottom-up to a fixpoint, and perform NO normalisation of any
+   kind.  No conditional rewriting, no permutative or associative rules, no
+   object-logic conversion, no simpset, no congruence rules, no solver.  Anything
+   that needs those wants `Raw_Simplifier'.  The value here is what is ABSENT: the
+   output is the input with the matched redexes replaced and nothing else touched.
+
+   Why not something existing.  `Raw_Simplifier.rewrite' has the right traversal but
+   normalises: a rule firing at a node composes the equation with
+   `Thm.eta_conversion' of that node, so parts no rule touched come back
+   eta-contracted -- for output read by a human or an LLM that is a real loss.
+   `Pure/conv.ML' normalises nothing, but none of its four traversals re-scans the
+   RESULT of a rewrite in place, so a fixpoint costs `Conv.repeat_changed_conv'
+   around the whole term, i.e. up to O(depth) full sweeps.
+
+   THE ONE STRUCTURAL RULE.  The traversal is built on `Conv.sub_conv' and its fork
+   `sub_conv_skel', NEVER on a case table over `Pure.imp' / `Pure.all' / `&&&'.  A
+   case table would stop the traversal descending into connectives the caller's own
+   rules introduce, and it would have to re-implement the `abs_conv (conv o snd)'
+   line, whose `snd' threads the EXTENDED context `Conv.abs_conv' hands back.
+   Dropping that is not a compile error but a run-time one ("Bad context: clash of
+   fresh free for bound", variable.ML).
+
+   TERMINATION IS THE CALLER'S PROBLEM.  Nothing is inspected when a rule is added.
+   Two run-time backstops keep a divergent run from taking the session down; they
+   are not loop detectors and cannot say what was going round in circles:
+
+     - a step limit;
+     - a bound on how far the term may GROW relative to the input.  Cheap because a
+       step replaces one node, so the running sum of `size(residue) - size(redex)'
+       IS `size(current term) - size(input)'.  That identity needs an ADDITIVE
+       measure, which is why `Term.size_of_term' is used and the smart one in
+       library/term_size.ML is not.
+
+   Divergence that neither repeats a term nor grows one is caught by neither.
+
+   TWO LAYERS.  `Thm.cterm_of' REJECTS a term containing a loose `Bound' ("Loose
+   bound variable: B.n", sign.ML), so the conv layer cannot be handed one.  The term
+   layer (`rewrite_term') exists for callers that must rewrite exactly such terms;
+   `Object_Logic.atomize_term' is the standard example.  It produces NO PROOF, which
+   is what it gives up and also why it is much the faster of the two.
+
+   SKELETON PRUNING.  Re-traversing the whole result of every hit is O(size^2) worst
+   case.  A skeleton runs alongside the term and records where material came from:
+   it is the rule's right-hand side, in which a `Var' is a HOLE (material matched
+   out of the term, already normal because the traversal is bottom-up, so skipped)
+   and everything else is SHELL (new material from the rule, possibly a redex
+   itself, so traversed).  The projections and `is_hole' are defined ONCE and both
+   layers use them: the skeleton discipline is the one thing they must never
+   disagree about.
+
+   THREE CONDITIONS DISQUALIFY A RIGHT-HAND SIDE FROM BEING A SKELETON; when any
+   holds, the step falls back to `skel0' and prunes nothing.  None of them subsumes
+   another -- (a) and (c) were each verified to be load-bearing on their own:
+
+   (a) the deep beta ending `Conv.rewr_conv' changed the right-hand side, so the
+       skeleton no longer aligns with it, or hole material was rewritten IN PLACE
+       into a form the traversal never normalised;
+   (b) the right-hand side has a schematic the left-hand side does not bind, so that
+       hole is filled with material that arrived with the RULE, never normalised;
+   (c) the left-hand side is not a first-order pattern, so the matcher may have
+       SYNTHESISED the hole material with `mkabs' -- a node not in the term at all.
+
+   WHAT THE LAYERS SHARE: the skeleton projections and `is_hole'; the candidate
+   lookup; the two backstops, built once by `make_guard'; conditions (b) and (c).
+   Condition (a) is two implementations of one test -- read both.  NOT shared, and
+   deliberately: the traversal recursion.  The carriers represent "nothing changed"
+   in opposite ways (a reflexive theorem that must still be composed, versus `NONE'),
+   and the conv layer must build a kernel inference at every node while the term
+   layer must build nothing at all -- which is the entire reason the term layer
+   exists.  A functor over an abstract carrier would save about ten lines and put an
+   indirect call in the hottest loop of both.  The cross-layer differential test is
+   what keeps the two `go' functions from drifting.
+
+   THREE DELIBERATE DEVIATIONS FROM `Pattern.rewrite_term', all so that the two
+   layers agree with each other:
+
+   1. a beta redex is not a rewrite step (more_pattern.ML:70, 77 contracts one
+      wherever it finds it); this module contracts nothing it was not asked to;
+   2. but the result of each step IS `Envir.beta_norm'-ed, because that is what
+      `Conv.rewr_conv' does at the conv layer.  If that deep beta is ever dropped,
+      BOTH layers must drop it in one edit;
+   3. it goes under a binder with `Variable.next_bound' + `Term.used_free' + its own
+      `open_abs' rather than `variant_absfree'; see `dest_abs' for why each of the
+      obvious alternatives is wrong.
+
+   Measurements, soundness arguments and review history: NET_REWRITE_PLAN.md.
+
+   Qiyuan Xu (with AI assistance)
+*)
+
+signature MERELY_REWRITE =
+sig
+  type rules = thm iNet.net
+
+  (* Rule sets.
+
+     INPUT CONTRACT: every rule must already be a meta-equation `lhs == rhs'.  This
+     module does not convert object-logic equations and does not want to -- that
+     conversion is logic-specific and `Raw_Simplifier.mksimps' (raw_simplifier.ML:67)
+     is the canonical one.  Pass its output.  Anything else is rejected by
+     `dest_rule'. *)
+  val empty_rules: rules
+  val add_rule: thm -> rules -> rules
+  val del_rule: thm -> rules -> rules
+  val make_rules: thm list -> rules
+  val dest_rules: rules -> thm list
+
+  (*`Theory_Data'/`Generic_Data' demand a merge, a theory being a DAG.  Writing one
+    by hand is possible -- `rules' is transparent -- but `iNet.merge' takes an
+    equality predicate, and it has to be the SAME one `add_rule' and `del_rule' use
+    (`Thm.eq_thm_prop').  Guessing `Thm.eq_thm', which also compares hypotheses and
+    certificates, leaves two copies of one rule after a merge; `del_rule' then
+    removes one, and the survivor keeps firing and can never be deleted.  Exported
+    so that callers write `val merge = Merely_Rewrite.merge_rules' and cannot get
+    that wrong.*)
+  val merge_rules: rules * rules -> rules
+
+  (* ONE rewrite step, at the current node only -- no traversal whatsoever.  The
+     net is only where the candidates come from; the caller decides where in the
+     term this gets applied.  `Pure/conv.ML' already offers three traversal orders
+     to feed it to (`Conv.bottom_conv', `Conv.top_conv', `Conv.top_sweep_conv');
+     the one this module adds is bottom-up with in-place re-scanning, below. *)
+  val single_step_rewrite_conv: (Proof.context -> 'a -> conv) -> 'a iNet.net -> Proof.context -> conv
+  val rewrs_net_conv: rules -> Proof.context -> conv
+
+  (* The same, at the term level: one step at this node, `NONE' if no rule applies.
+     `single_step_rewrite_term' is `single_step_rewrite_conv' with `get_first' in
+     place of `Conv.first_conv', over the same net and the same candidates. *)
+  val single_step_rewrite_term:
+    (Proof.context -> 'a -> term -> term option) -> 'a iNet.net ->
+    Proof.context -> term -> term option
+  val rewrs_net_term: rules -> Proof.context -> term -> term option
+
+  (* SKELETONS.  A skeleton is a term of the same shape as the right-hand side of
+     the equation a step produced, with a `Var' wherever that position was filled
+     with material taken out of the term being rewritten (a HOLE, already normal,
+     skipped) and anything else where the rule's right-hand side put it (SHELL, new,
+     traversed).  `skel0' is the wildcard: it claims nothing is a hole and therefore
+     prunes nothing.
+
+     A step that hands back a skeleton it cannot justify SILENTLY loses rewrites --
+     no exception, no warning.  Produce skeletons with `rewr_skel_conv' /
+     `rewrs_net_skel_conv' / `rewrs_net_skel_term', which know the three conditions
+     that disqualify a right-hand side; do not invent them. *)
+  type skel = term
+  val skel0: skel
+  val is_hole: skel -> bool
+  val skel_fun: skel -> skel
+  val skel_arg: skel -> skel
+  val skel_body: skel -> skel
+
+  type skel_conv = cterm -> thm * skel
+  type skel_term = term -> (term * skel) option
+  val rewr_skel_conv: thm -> skel_conv
+  val single_step_rewrite_skel_conv:
+    (Proof.context -> 'a -> skel_conv) -> 'a iNet.net -> Proof.context -> skel_conv
+  val single_step_rewrite_skel_term:
+    (Proof.context -> 'a -> skel_term) -> 'a iNet.net -> Proof.context -> skel_term
+  val rewrs_net_skel_conv: rules -> Proof.context -> skel_conv
+  val rewrs_net_skel_term: rules -> Proof.context -> skel_term
+
+  (* divergence.
+
+     The payload is a `term', not a `cterm', because the term layer must be able to
+     raise this same exception and its input may contain loose `Bound' variables,
+     which `Thm.cterm_of' rejects ("Loose bound variable: B.n", sign.ML).
+
+     A caller that wants the `cterm' back writes `Thm.cterm_of ctxt t'.  That is
+     O(size), and it is NOT guaranteed to succeed -- the payload may be an open term
+     from the term layer, or name a constant this theory does not have.  Nothing in
+     the payload's type says which layer it came from, so be prepared for it to
+     fail. *)
+  datatype divergence =
+      Step_Limit of int
+    | Growth of {input_size: int, current_size: int, allowed_growth: int, residue: term}
+  exception DIVERGES of divergence * term
+  val string_of_divergence: Proof.context -> rules -> divergence * term -> string
+
+  (* how much the term may grow before L5 gives up: growth_factor * size of the
+     input + growth_offset *)
+  val growth_factor: int Config.T
+  val growth_offset: int Config.T
+
+  (* the traversal, independent of how a single step is performed.
+
+     THREE SOURCES, IN THIS ORDER OF PRECEDENCE -- this is the only place the rule
+     is stated, everything else refers here:
+
+       1. the `options' passed to the call        (highest)
+       2. the Config values in the context
+       3. the built-in defaults in this file      (lowest)
+
+     The Config layer is for the USER: settable with `declare [[...]]', visible in
+     `print_options', the way to raise the thresholds for a whole theory.  The
+     `options' layer is for a LIBRARY CALLER who needs a hard guarantee -- "this call
+     will never take more than N steps" must not be loosened by whatever a
+     surrounding context happens to say, so an explicit argument wins.
+
+     `step_limit' is doubly optional on purpose: `NONE' is "do not override",
+     `SOME NONE' is "override, with no limit at all". *)
+  type options =
+    {size_check: bool option,
+     step_limit: int option option,
+     growth_factor: int option,
+     growth_offset: int option} option
+  val default_options: options   (*NONE: take everything from the layers below*)
+  val no_check: options          (*every guard off -- see the note at its definition*)
+  val bottom_fixpoint_conv: options -> (Proof.context -> conv) -> Proof.context -> conv
+  val bottom_fixpoint_term:
+    options -> (Proof.context -> term -> term option) -> Proof.context -> term -> term
+
+  (* the same two traversals, given a step that also hands back a skeleton: the
+     subtrees the skeleton marks as holes are neither descended into nor rewritten
+     at.  The skeleton is taken ON TRUST; see the note above. *)
+  val bottom_fixpoint_skel_conv: options -> (Proof.context -> skel_conv) -> Proof.context -> conv
+  val bottom_fixpoint_skel_term:
+    options -> (Proof.context -> skel_term) -> Proof.context -> term -> term
+
+  (* TEST-ONLY -- the switch the correctness comparison is built on.  `Reference' is
+     the traversal exactly as it was before skeletons, kept as the oracle;
+     `No_Skeleton' is the forked traversal fed nothing but `skel0'.  So `Reference'
+     vs `No_Skeleton' tests the FORK, `No_Skeleton' vs `Skeleton' tests the PRUNING.
+     `Reference' is to be moved into a test-only file and deleted from here.
+
+     There is deliberately no Config to turn pruning off: with conditions (a), (b)
+     and (c) in place it does not change what comes out, only how many nodes are
+     visited. *)
+  datatype mode = Reference | No_Skeleton | Skeleton
+  val bottom_fixpoint_conv_mode:
+    mode -> options -> (Proof.context -> conv) -> Proof.context -> conv
+  val bottom_fixpoint_term_mode:
+    mode -> options -> (Proof.context -> term -> term option) -> Proof.context -> term -> term
+  val rewrite_conv_mode: mode -> options -> rules -> Proof.context -> conv
+  val rewrite_term_mode: mode -> options -> rules -> Proof.context -> term -> term
+
+  (* proof-producing entry points *)
+  val rewrite_conv: rules -> Proof.context -> conv
+  val rewrite_conv_options: options -> rules -> Proof.context -> conv
+  val rewrite_cterm: rules -> Proof.context -> cterm -> cterm
+  val rewrite_rule: rules -> Proof.context -> thm -> thm
+
+  (* term-level entry point: NO PROOF.  For callers that cannot use the conv layer
+     because `Thm.cterm_of' would reject their term, and for callers that simply do
+     not want a theorem.
+
+     LOOSE BOUND VARIABLES.  Descending under a binder replaces the bound variable
+     by a fresh free (`dest_abs' below), so a pattern variable cannot capture a
+     binder this traversal walked past.  A loose `Bound' that was ALREADY loose in
+     the input is a different matter: it is ordinary material to the matcher, so a
+     rule whose right-hand side puts a hole under a NEW binder can capture it.  That
+     is measured in Skel_Loose and it is not a regression --
+     `Pattern.rewrite_term', and hence `Object_Logic.atomize_term', behaves the same
+     way. *)
+  val rewrite_term: rules -> Proof.context -> term -> term
+  val rewrite_term_options: options -> rules -> Proof.context -> term -> term
+
+end;
+
+structure Merely_Rewrite: MERELY_REWRITE =
+struct
+
+type rules = thm iNet.net;
+
+(*ONE equality predicate for insert, delete and merge -- see the signature for why
+  that matters.*)
+val eq_rule = Thm.eq_thm_prop;
+
+
+(** rule sets **)
+
+(*MESSAGE TEXT IS NOT FINAL -- see the report for wording candidates.*)
+fun dest_rule th =
+  Logic.dest_equals (Thm.prop_of th)
+    handle TERM _ =>
+      raise THM ("Merely_Rewrite: rule is not a meta-equation \"lhs == rhs\"; \
+                 \object-logic theorems must be put through Raw_Simplifier.mksimps first",
+                 0, [th]);
+
+val empty_rules = iNet.empty;
+
+(*No check that the rule set terminates: that is the caller's responsibility.  See
+  the note at the top of the file for what that costs.*)
+fun add_rule th = iNet.insert_term_safe eq_rule (#1 (dest_rule th), th);
+fun del_rule th = iNet.delete_term_safe eq_rule (#1 (dest_rule th), th);
+fun make_rules ths = fold add_rule ths empty_rules;
+val dest_rules = iNet.content;
+val merge_rules = iNet.merge eq_rule;
+
+
+(** one step **)
+
+(*ONE step, at this node, nothing else: ask the net for the candidates here, then
+  try them in turn.  There is no descent into subterms -- that is the caller's
+  choice of traversal.  The net is an over-approximation (it ignores types and
+  treats a Var head as a wildcard), so a candidate may still fail to match; that is
+  expected and cheap.
+
+  iNet.insert_term/match_term beta-eta-contract the key term on both sides, so the
+  two sides of the lookup agree.  That normalisation is confined to *key
+  computation*; the cterm that gets rewritten is never touched by it.  Verified
+  separately that it neither loses nor invents a rewrite.*)
+fun single_step_rewrite_conv mk_conv net ctxt ct =
+  Conv.first_conv (map (mk_conv ctxt) (iNet.match_term net (Thm.term_of ct))) ct;
+
+(*The same at the term level.  `get_first' is to `term option' what
+  `Conv.first_conv' is to a conversion: try the candidates in turn, keep the first
+  that works.
+
+  WHY THE HANDLER, and it is not decoration.  `Conv.first_conv' is a chain of
+  `Conv.else_conv', which swallows THM/CTERM/TERM/TYPE from a failing candidate
+  (Pure/conv.ML:76); this swallows the two of those that can reach the term layer, so
+  that "this candidate did not apply" means the same thing in both layers.  It has to:
+  `Pattern.match' computes `fastype_of' of the object first, and `fastype_of' RAISES
+  on a bare `Bound' (term.ML:394) -- and a loose `Bound' is the whole reason this
+  layer exists.  `Pattern.rewrite_term' does throw on exactly this.
+
+  Caveat, and see NET_REWRITE_PLAN.md: the handler's granularity is the whole
+  candidate, so it also swallows a match that would have succeeded but could not be
+  typed.  Narrowing it is an open item.*)
+fun single_step_rewrite_term mk_rew net ctxt t =
+  get_first (fn x => mk_rew ctxt x t handle TERM _ => NONE | TYPE _ => NONE)
+    (iNet.match_term net t);
+
+(*`Thm.transfer'' so that rules stored context-free in theory data (the usual case
+  for an incrementally maintained net) are usable in the current context.*)
+val rewrs_net_conv = single_step_rewrite_conv (fn ctxt => Conv.rewr_conv o Thm.transfer' ctxt);
+
+
+(** skeletons **)
+
+type skel = term;
+type skel_conv = cterm -> thm * skel;
+type skel_term = term -> (term * skel) option;
+
+(*The wildcard skeleton and the projections, exactly as in Pure/more_pattern.ML:
+  50-53.  `Bound 0' is the wildcard because it is the one term former that can never
+  be a `Var' and therefore never a hole; the projections fall back to it whenever
+  the skeleton does not have the same shape as the term, which is the whole of the
+  defence against a skeleton that has drifted out of alignment.
+
+  THESE FIVE DEFINITIONS ARE THE ONLY PLACE THE SKELETON DISCIPLINE IS STATED, and
+  both traversals go through them.*)
+val skel0: skel = Bound 0;
+val is_hole = Term.is_Var;
+fun skel_fun (skel $ _) = skel | skel_fun _ = skel0;
+fun skel_arg (_ $ skel) = skel | skel_arg _ = skel0;
+fun skel_body (Abs (_, _, skel)) = skel | skel_body _ = skel0;
+
+(*Condition (b) at the top of this file: a schematic on the right that the left does
+  not bind.  Cheap -- rules are small -- and it is only ever asked after a match has
+  already succeeded.*)
+fun has_extra_var (lhs, rhs) =
+  let val bound = Term.add_vars lhs [] in
+    Term.exists_subterm (fn Var v => not (member (op =) bound v) | _ => false) rhs
+  end;
+
+(*(c) A LEFT-HAND SIDE THAT IS NOT A FIRST-ORDER PATTERN, e.g. `qq (%x. ?P x)'.
+
+  The whole point of a hole is that the material in it came OUT of the term being
+  rewritten, and the bottom-up traversal has therefore already normalised it.  For
+  a first-order left-hand side that is true: every binding `Pattern.match' produces
+  is a subterm of the object.  For a higher-order one it is not.  `match_bind'
+  (Pure/pattern.ML:319-329) calls `mkabs' (:109-113), which BUILDS an abstraction
+  that does not occur in the object at all; the traversal has never visited it, so
+  nothing has ever been tried on it, and pruning would skip it as if it had been.
+
+  Counterexample, measured on the module before this test existed: rules
+  `qq (%x. ?P x) == rr ?P' and `?F == hh' applied to `qq gg' give `rr (%x. gg x)'
+  -- matching eta-expands the object, so `?P := %x. gg x', a node nowhere in
+  `qq gg'; `?F == hh' never gets to fire inside the hole; the output is not even a
+  fixpoint.
+
+  `mkabs' is reached exactly when `is = ints_of pargs' is non-empty, i.e. exactly
+  when a `Var' occurs applied in the pattern -- which is exactly what
+  `Pattern.first_order' (Pure/more_pattern.ML:33-37) decides.  The test is therefore
+  not an approximation of the danger; it is the same condition.
+
+  IT IS HOWEVER THE CONSERVATIVE FORM, per-RULE: a rule that *could* synthesise
+  gives up pruning at *every* application, including those where nothing was.  The
+  exact form is per-HOLE and is cheap -- `match_bind' knows which bindings it built
+  (they are the ones from the non-empty-`is' branch) and Pure simply discards that.
+  Deferred, not dismissed; see NET_REWRITE_PLAN.md for what it would recover.
+
+  NOT a substitute for condition (a), nor (a) for it: (a) catches a deep beta that
+  rewrote hole material IN PLACE into a form the traversal never normalised, which
+  happens with first-order left-hand sides too.  Removing (a) while keeping this
+  test breaks the fuzz corpus.*)
+fun lhs_not_first_order lhs = not (Pattern.first_order lhs);
+
+(*A FORK of `Conv.rewr_conv' (Pure/conv.ML:170-183) that also returns the skeleton.
+  Everything down to `rule4' is copied verbatim and must stay that way; a wrapper
+  around `Conv.rewr_conv' cannot do this instead, because by the time the thm comes
+  back the rule is gone AND the deep beta has already happened, so neither condition
+  (a) nor the right-hand side itself is still available.*)
+fun rewr_skel_conv rule ct =
+  let
+    val rule1 = Thm.incr_indexes (Thm.maxidx_of_cterm ct + 1) rule;
+    val lhs = Thm.lhs_of rule1;
+    val rule2 = Thm.rename_boundvars (Thm.term_of lhs) (Thm.term_of ct) rule1;
+    val rule3 =
+      Thm.instantiate (Thm.match (lhs, ct)) rule2
+        handle Pattern.MATCH => raise CTERM ("rewr_conv", [lhs, ct]);
+    val rule4 =
+      if Thm.lhs_of rule3 aconvc ct then rule3
+      else
+        let val ceq = Thm.dest_fun2 (Thm.cprop_of rule3)
+        in rule3 COMP Thm.trivial (Thm.mk_binop ceq ct (Thm.rhs_of rule3)) end;
+    val beta = Thm.beta_conversion true (Thm.rhs_of rule4);
+    val rhs = Thm.term_of (Thm.rhs_of rule1);
+    val lhs_t = Thm.term_of lhs;
+    val skel =
+      if Thm.is_reflexive beta                                (*condition (a)*)
+        andalso not (has_extra_var (lhs_t, rhs))              (*condition (b)*)
+        andalso not (lhs_not_first_order lhs_t)               (*condition (c)*)
+      then rhs else skel0;
+  in (Thm.transitive rule4 beta, skel) end;
+
+(*The term-level twin.  `Pattern.match_rew' IS the term-level `rewr_conv': it
+  matches, instantiates, and hands back the renamed right-hand side -- which is
+  precisely the skeleton -- so matching and substitution are not rewritten here.  The
+  additions mirror `rewr_skel_conv': `Envir.beta_norm' on the result (because
+  `Thm.beta_conversion true' IS `Envir.beta_norm', thm.ML:1528, and the conv layer
+  applies it to every step), then the same three conditions.
+
+  NOT DONE HERE, deliberately: `Thm.incr_indexes'.  `Conv.rewr_conv' renames the
+  rule's schematics apart from the term's at every application; `Pattern.match_rew'
+  does not, so a rule variable can be conflated with a schematic of the same name in
+  the input, and this includes TYPE variables (`Logic.incr_tvar').  Both are
+  properties `Pattern.rewrite_term' already has, and paying for an `incr_indexes' at
+  every candidate at every node is a real cost for a rule family this module already
+  documents as unsupported.  Recorded as a known cross-layer difference.*)
+fun rewr_skel_term thy rule t =
+  (case Pattern.match_rew thy t (Logic.dest_equals (Thm.prop_of rule)) of
+    NONE => NONE
+  | SOME (result, rhs) =>
+      let
+        (*`Envir.beta_norm' is `Same.commit (norm_term_same init)', which raises
+          `Same.SAME' when there is nothing to contract, so an unreduced result comes
+          back as the IDENTICAL value.  `pointer_eq' therefore answers condition (a)
+          in constant time.  If a future `beta_norm' ever rebuilt the term anyway,
+          this would answer "reduced" when nothing was, which costs pruning and
+          nothing else -- the failure direction is the safe one.*)
+        val result' = Envir.beta_norm result;
+        val lhs_t = #1 (Logic.dest_equals (Thm.prop_of rule));
+        val skel =
+          if pointer_eq (result, result')                             (*condition (a)*)
+            andalso not (has_extra_var (lhs_t, rhs))                  (*condition (b)*)
+            andalso not (lhs_not_first_order lhs_t)                   (*condition (c)*)
+          then rhs else skel0;
+      in SOME (result', skel) end);
+
+(*As `single_step_rewrite_conv' / `single_step_rewrite_term', for steps that carry a
+  skeleton.  The conv version reproduces the exception behaviour of
+  `Conv.first_conv', i.e. of `Conv.else_conv': the four exceptions a failing
+  conversion is allowed to raise are caught and the next candidate tried; an empty
+  candidate list raises what `Conv.no_conv' raises.*)
+fun single_step_rewrite_skel_conv mk_conv net ctxt ct =
+  let
+    fun first [] = raise CTERM ("no conversion", [])
+      | first (cv :: cvs) =
+          cv ct
+            handle THM _ => first cvs
+              | CTERM _ => first cvs
+              | TERM _ => first cvs
+              | TYPE _ => first cvs;
+  in first (map (mk_conv ctxt) (iNet.match_term net (Thm.term_of ct))) end;
+
+(*the handler is the one explained at `single_step_rewrite_term'*)
+fun single_step_rewrite_skel_term mk_rew net ctxt t =
+  get_first (fn x => mk_rew ctxt x t handle TERM _ => NONE | TYPE _ => NONE)
+    (iNet.match_term net t);
+
+val rewrs_net_skel_conv =
+  single_step_rewrite_skel_conv (fn ctxt => rewr_skel_conv o Thm.transfer' ctxt);
+
+fun rewrs_net_skel_term net ctxt =
+  single_step_rewrite_skel_term
+    (fn ctxt' => rewr_skel_term (Proof_Context.theory_of ctxt')) net ctxt;
+
+(*the skeleton-free term step, for `bottom_fixpoint_term'*)
+fun rewrs_net_term net ctxt =
+  single_step_rewrite_term
+    (fn ctxt' => fn rule => fn t => Option.map #1 (rewr_skel_term (Proof_Context.theory_of ctxt') rule t))
+    net ctxt;
+
+
+(** divergence **)
+
+datatype divergence =
+    Step_Limit of int
+  | Growth of {input_size: int, current_size: int, allowed_growth: int, residue: term};
+
+(*CONFIG NAMES ARE NOT FINAL -- see the report for candidates.  These are options
+  rather than constants because the right answer genuinely depends on the rule set:
+  a set of unfolding rules is *supposed* to make the term much bigger, and a fixed
+  ceiling would put that whole class of use out of reach.*)
+(*`Attrib.setup_config_int', NOT `Config.declare_int': the latter creates the config
+  value but does NOT register an Isar attribute, so `declare [[...]]' fails with
+  "Undefined attribute" and `print_options' does not list it -- i.e. the whole
+  Config layer would be reachable only from ML, while the signature above sells it
+  as the layer that exists *for the user*, and the L5 failure message points the
+  user at exactly these two names.*)
+val growth_factor = Attrib.setup_config_int \<^binding>\<open>net_rewrite_growth_factor\<close> (K 10);
+val growth_offset = Attrib.setup_config_int \<^binding>\<open>net_rewrite_growth_offset\<close> (K 1000);
+
+(*A dedicated exception, NOT one of THM/CTERM/TERM/TYPE: those four are exactly
+  what `Conv.else_conv' swallows, so a report raised with any of them would be
+  caught by the `try_conv' inside the traversal and silently turn into "no
+  rewrite".*)
+exception DIVERGES of divergence * term;
+
+(*MESSAGE TEXT IS NOT FINAL -- see the report for wording candidates.  What matters
+  and should survive any rewording: name the rules that are implicated and show the
+  terms that repeat, because this is read by an agent that has to act on it.*)
+fun string_of_divergence ctxt rules (d, t) =
+  let
+    val show = Syntax.string_of_term ctxt;
+    val culprits = iNet.match_term rules t;
+    val rule_text =
+      if null culprits then "  (no rule of the set matches this term)"
+      else cat_lines (map (fn th => "  " ^ Thm.string_of_thm ctxt th) culprits);
+  in
+    (case d of
+      Step_Limit n =>
+        "rewriting did not reach a fixpoint within " ^ string_of_int n ^
+        " steps; cut off at\n  " ^ show t ^
+        "\nrules applicable at that term:\n" ^ rule_text
+    | Growth {input_size, current_size, allowed_growth, residue} =>
+        "rewriting keeps making the term bigger: it has grown from " ^
+        string_of_int input_size ^ " to " ^ string_of_int current_size ^
+        ", past the allowed growth of " ^ string_of_int allowed_growth ^
+        " (see net_rewrite_growth_factor, net_rewrite_growth_offset).\nThe last step rewrote\n  " ^
+        show t ^ "\nto\n  " ^ show residue ^
+        "\nrules applicable at that subterm:\n" ^ rule_text)
+  end;
+
+
+(** traversal **)
+
+type options =
+  {size_check: bool option,
+   step_limit: int option option,
+   growth_factor: int option,
+   growth_offset: int option} option;
+
+(*Built-in defaults: the bottom of the three layers described in the signature.
+
+  CAUTION on the step limit.  `go' below is NOT tail recursive, so a divergence that
+  actually reaches the limit has that many nested frames on the ML stack.  Measured:
+  survival at ten million is not deterministic -- it depends on what the session has
+  already done -- and even when it survives the report arrives after minutes, which
+  for a backstop meant to stop an agent waiting on a hung rewrite is barely better
+  than the hang.  Hence the value below rather than something larger.  Numbers in
+  NET_REWRITE_PLAN.md.*)
+val default_size_check = true;
+val default_step_limit = SOME 3000000;
+
+val default_options: options = NONE;
+(*Every guard off: no step limit, no growth bound.  NOTHING then stops a divergent
+  rule set -- a cycle runs until the ML stack gives out, which surfaces as
+  "Unable to increase stack - interrupting thread" / Interrupt_Breakdown, aborts
+  the enclosing theory, and cannot be pre-empted by `Timeout.apply'.  Its intended
+  use is measurement: subtracting the guards from the total to time the traversal
+  on its own.*)
+val no_check: options =
+  SOME {size_check = SOME false, step_limit = SOME NONE,
+        growth_factor = NONE, growth_offset = NONE};
+
+(*Resolve the three layers.  See the signature for the precedence rule.*)
+fun resolve ctxt (opts: options) =
+  let
+    fun field sel dflt =
+      (case opts of SOME r => (case sel r of SOME v => v | NONE => dflt) | NONE => dflt);
+  in
+    {size_check = field #size_check default_size_check,
+     step_limit = field #step_limit default_step_limit,
+     growth_factor = field #growth_factor (Config.get ctxt growth_factor),
+     growth_offset = field #growth_offset (Config.get ctxt growth_offset)}
+  end;
+
+(*L4 AND L5, BUILT ONCE AND SHARED BY BOTH TRAVERSALS.  `before_step' is asked
+  before a step is attempted; `after_step' is told what the step replaced and what
+  it produced, and is called only for steps that really happened.  Everything is in
+  terms of `term', which is why `DIVERGES' carries a term.*)
+fun make_guard opts ctxt0 t0 =
+  let
+    val {size_check, step_limit, growth_factor = gfactor, growth_offset = goffset} =
+      resolve ctxt0 opts;
+
+    val remaining = Unsynchronized.ref (the_default ~1 step_limit);
+    val bounded = is_some step_limit;
+
+    (*L5 state.  `input_size' is measured once; `grown' is the running sum of
+      size(residue) - size(redex), which by the identity documented at the top of
+      this file equals size(current whole term) - input_size.*)
+    val input_size = if size_check then Term.size_of_term t0 else 0;
+    val allowed_growth = if size_check then gfactor * input_size + goffset else 0;
+    val grown = Unsynchronized.ref 0;
+
+    fun before_step t1 =
+      if bounded andalso ! remaining <= 0
+      then raise DIVERGES (Step_Limit (the step_limit), t1) else ();
+
+    fun after_step (t1, t2) =
+      (remaining := ! remaining - 1;
+       if size_check then
+         let
+           val delta = Term.size_of_term t2 - Term.size_of_term t1;
+           val _ = grown := ! grown + delta;
+         in
+           if ! grown > allowed_growth then
+             raise DIVERGES (Growth {input_size = input_size,
+               current_size = input_size + ! grown, allowed_growth = allowed_growth,
+               residue = t2}, t1)
+           else ()
+         end
+       else ());
+  in {before_step = before_step, after_step = after_step} end;
+
+(*A FORK of `Conv.sub_conv' (Pure/conv.ML:131), threading a skeleton.  Two reasons
+  the original cannot be used: its callback takes only a context, so there is
+  nowhere to put the skeleton, and it is `comb_conv (conv ctxt)', which gives the
+  function part and the argument part the SAME conversion, where the two halves need
+  DIFFERENT skeletons.
+
+  Two things kept from the original that a reviewer should check first: NO case
+  analysis on the shape of the term (the three branches are "application",
+  "abstraction", "neither" -- `Pure.imp' / `Pure.all' / `&&&' are not mentioned, so a
+  connective the caller's own rules introduce is descended into like anything else);
+  and the EXTENDED context that `Conv.abs_conv' hands back, which is what the body
+  must be traversed under.  See the header for what dropping the latter costs.
+
+  Fed `skel0' everywhere this degenerates to `Conv.sub_conv'.*)
+fun sub_conv_skel conv skel ctxt =
+  Conv.combination_conv (conv (skel_fun skel) ctxt) (conv (skel_arg skel) ctxt)
+  else_conv
+  Conv.abs_conv (fn (_, ctxt') => conv (skel_body skel) ctxt') ctxt
+  else_conv
+  Conv.all_conv;
+
+datatype mode = Reference | No_Skeleton | Skeleton;
+
+(*Bottom-up; after a successful step at a node, re-traverse the *result* bottom-up
+  in place.  Compare Conv.bottom_conv, which is
+
+      sub_conv (bottom_conv conv) ctxt then_conv conv ctxt
+
+  i.e. identical except that it does not come back after `conv ctxt' fires.
+
+  `Conv.sub_conv' cannot fail (it ends in `all_conv') and the right operand is
+  wrapped in `Conv.try_conv', so the traversal itself never fails: on a term with
+  no redex it returns a reflexive theorem.
+
+  `Conv.changed_conv' is load-bearing, not decoration.  A conversion may *succeed*
+  and still return a reflexive theorem -- `Conv.rewr_conv' does exactly that for a
+  rule such as `?x == cc' applied to `cc'.  Without the guard, that "success"
+  triggers another traversal of an unchanged term, which succeeds again, for ever.
+  Measured: it exhausts the ML stack and kills the thread.  With the guard, a step
+  that changes nothing counts as no step, which is also the right reading of
+  "rewrite to a fixpoint".
+
+  SHAPE OF THE RECURSION -- a known defect, left as it is pending a decision.  The
+  recursive call sits in the ARGUMENT position of `Thm.transitive' on the last line,
+  so it is not a tail call: stack depth AND live set both grow with the number of
+  steps, and GC time grows superlinearly with them.  A tail-recursive accumulator
+  prototype returning the same theorem is flat at ~0.8us/step with GC at ~1%; this
+  shape degrades to ~1.8us/step with GC exceeding the compute time.  Since the step
+  limit is the only thing between an oscillating rule set and an unbounded run, this
+  decides how usable that backstop is.  Numbers in NET_REWRITE_PLAN.md.*)
+
+(*One conv-level traversal, three ways in.  The guards are the shared ones and are
+  the same whichever descent runs; only the shape of the descent differs.*)
+fun bottom_fixpoint_gen_conv mode opts (step: Proof.context -> skel_conv) ctxt0 ct0 =
+  let
+    val {before_step, after_step} = make_guard opts ctxt0 (Thm.term_of ct0);
+
+    (*one step at this node, with both guards, or `CTERM' if there is no step here.
+      The `Conv.changed_conv' treatment is unchanged and still load-bearing: a
+      conversion may succeed and return a reflexive theorem, and that must count as
+      no step at all -- see the note below.*)
+    fun accounted_step ctxt ct1 =
+      let
+        val _ = before_step (Thm.term_of ct1);
+        val (eq, skel') = step ctxt ct1;
+        val _ = if Thm.is_reflexive eq then raise CTERM ("changed_conv", [ct1]) else ();
+        val ct2 = Thm.rhs_of eq;
+        val _ = after_step (Thm.term_of ct1, Thm.term_of ct2);
+      in (eq, ct2, skel') end;
+
+    (*the traversal as it was before skeletons existed; kept as the oracle the other
+      one is compared against, and to be deleted once that comparison is over.*)
+    fun go_ref ctxt ct =
+      (Conv.sub_conv go_ref ctxt
+         then_conv
+       Conv.try_conv (fn ct1 =>
+         let val (eq, ct2, _) = accounted_step ctxt ct1
+         in Thm.transitive eq (go_ref ctxt ct2) end)) ct;
+
+    (*the same, with the skeleton threaded through.  A hole is passed over with a
+      reflexive theorem; `then_conv' short-circuits on one, so a passed-over subtree
+      costs one `Thm.reflexive' and no kernel inference above it either.*)
+    fun go skel ctxt ct =
+      if is_hole skel then Thm.reflexive ct
+      else
+        (sub_conv_skel go skel ctxt
+           then_conv
+         Conv.try_conv (fn ct1 =>
+           let val (eq, ct2, skel') = accounted_step ctxt ct1
+           in Thm.transitive eq (go skel' ctxt ct2) end)) ct;
+  in
+    (case mode of
+      Reference => go_ref ctxt0 ct0
+    | _ => go skel0 ctxt0 ct0)
+  end;
+
+fun bottom_fixpoint_skel_conv opts step = bottom_fixpoint_gen_conv Skeleton opts step;
+
+fun bottom_fixpoint_conv_mode mode opts cv =
+  bottom_fixpoint_gen_conv mode opts (fn ctxt => fn ct => (cv ctxt ct, skel0));
+
+fun bottom_fixpoint_conv opts cv = bottom_fixpoint_conv_mode No_Skeleton opts cv;
+
+
+(** the same traversal over plain terms **)
+
+(*`NONE' means "nothing changed here", which is what a reflexive theorem means at the
+  conv layer.  Compare `go' above line for line: the guards are the same object, the
+  skeleton discipline is the same three projections and the same `is_hole', and the
+  order of business at a node -- descend, then step, then re-descend the result under
+  the new skeleton -- is the same.  What differs is only that nothing is proved.*)
+fun bottom_fixpoint_gen_term mode opts (step: Proof.context -> skel_term) ctxt0 t0 =
+  let
+    val {before_step, after_step} = make_guard opts ctxt0 t0;
+
+    fun accounted_step ctxt t1 =
+      (before_step t1;
+       (case step ctxt t1 of
+         NONE => NONE
+       | SOME (t2, skel') =>
+           (*a step that changes nothing counts as no step, exactly as
+             `Conv.changed_conv' decides at the conv layer*)
+           if t1 aconv t2 then NONE
+           else (after_step (t1, t2); SOME (t2, skel'))));
+
+    (*Going under a binder: replace the bound variable by a fresh free, and put it
+      back afterwards.  Without this the body has a loose `Bound' in it and a pattern
+      variable could capture it.  This is what `variant_absfree' (more_pattern.ML:60)
+      and `Variable.dest_abs_cterm' (inside `Conv.abs_conv') do, but neither of them
+      can be used verbatim -- see the two notes below, one about the substitution and
+      one about where the fresh name comes from.
+
+      NOT `Variable.dest_abs'.  `Variable.dest_abs' opens the abstraction with
+      `Term.dest_abs_fresh', hence with `subst_bound', which also SHIFTS every other
+      loose `Bound' down by one; `abstract_over' on the way back does not shift them
+      up again, so a `Bound' that was already loose in the input comes back one level
+      too low -- and worse, it collides with the `Bound 0' that `abstract_over' is
+      about to introduce, so it silently starts pointing at this binder.  Measured
+      before the fix, in Skel_Loose L2f: `qq (%u. pp (ff aa) (Bound 1))' came out as
+      `qq (%u. pp (gg aa) (Bound 0))'.  `variant_absfree' in `Pattern.rewrite_term'
+      is built the same way and has the same behaviour.
+
+      `open_abs' therefore replaces `Bound 0' and leaves every other `Bound' exactly
+      as it was, which is the inverse of what `abstract_over' does.  On a term with
+      no loose bounds -- the normal case -- it is `subst_bound'.*)
+    fun open_abs v b =
+      let
+        fun go lev (Bound i) = if i = lev then v else Bound i
+          | go lev (Abs (a, T, t)) = Abs (a, T, go (lev + 1) t)
+          | go lev (t $ u) = go lev t $ go lev u
+          | go _ t = t;
+      in go 0 b end;
+
+    (*`Variable.next_bound', NOT `Variable.variant_fixes'.  The name has to be fresh
+      for the TERM, not merely for the context, because `abstract_over' on the way
+      back captures EVERY occurrence of it -- including a `Free' that was already in
+      the body, and including one that a rule's right-hand side brings in later,
+      which no amount of `declare_term' at the call site can anticipate.
+      `variant_fixes' searches the context and knows about neither.  `next_bound'
+      (variable.ML:320) hands out the `Name.bound' family -- `:000', `:001', names
+      the user cannot write and no rule can contain -- so both are closed by
+      construction.  This is also what the conv layer gets, via
+      `Variable.dest_abs_cterm'.
+
+      The `used_free' check is not redundant: `next_bound' looks at the context too,
+      so a term that literally contains `Free ":000"' would still be captured, and
+      silently.  The conv layer is loud about that case (`Fail: Bad context: clash of
+      fresh free for bound', variable.ML:673-676); this makes the term layer loud
+      too, rather than quietly wrong.*)
+    fun dest_abs ctxt (Abs (a, T, b)) =
+          let
+            val (v as Free (x, _), ctxt') = Variable.next_bound (a, T) ctxt;
+            val _ =
+              if Term.used_free x b then
+                raise Fail ("Merely_Rewrite: clash of fresh free for bound: " ^ quote x)
+              else ();
+          in (fn u => Abs (a, T, abstract_over (v, u)), open_abs v b, ctxt') end
+      | dest_abs _ t = raise TERM ("dest_abs", [t]);
+
+    fun go skel ctxt t =
+      if is_hole skel then NONE
+      else
+        (case sub skel ctxt t of
+          SOME t1 =>
+            (case accounted_step ctxt t1 of
+              SOME (t2, skel') => SOME (perhaps (go skel' ctxt) t2)
+            | NONE => SOME t1)
+        | NONE =>
+            (case accounted_step ctxt t of
+              SOME (t1, skel') => SOME (perhaps (go skel' ctxt) t1)
+            | NONE => NONE))
+
+    (*the term-level `sub_conv_skel'.  Note what is NOT here: the `(Abs _ $ t)'
+      clause of `Pattern.rewrite_term' (more_pattern.ML:76), which contracts a beta
+      redex found in the term.  This module contracts nothing it was not asked to.*)
+    and sub skel ctxt (t $ u) =
+          (case (go (skel_fun skel) ctxt t, go (skel_arg skel) ctxt u) of
+            (SOME t', SOME u') => SOME (t' $ u')
+          | (SOME t', NONE) => SOME (t' $ u)
+          | (NONE, SOME u') => SOME (t $ u')
+          | (NONE, NONE) => NONE)
+      | sub skel ctxt (t as Abs _) =
+          let val (abs, body, ctxt') = dest_abs ctxt t
+          in Option.map abs (go (skel_body skel) ctxt' body) end
+      | sub _ _ _ = NONE;
+
+    fun go_ref ctxt t =
+      (case sub_ref ctxt t of
+        SOME t1 =>
+          (case accounted_step ctxt t1 of
+            SOME (t2, _) => SOME (perhaps (go_ref ctxt) t2)
+          | NONE => SOME t1)
+      | NONE =>
+          (case accounted_step ctxt t of
+            SOME (t1, _) => SOME (perhaps (go_ref ctxt) t1)
+          | NONE => NONE))
+
+    and sub_ref ctxt (t $ u) =
+          (case (go_ref ctxt t, go_ref ctxt u) of
+            (SOME t', SOME u') => SOME (t' $ u')
+          | (SOME t', NONE) => SOME (t' $ u)
+          | (NONE, SOME u') => SOME (t $ u')
+          | (NONE, NONE) => NONE)
+      | sub_ref ctxt (t as Abs _) =
+          let val (abs, body, ctxt') = dest_abs ctxt t
+          in Option.map abs (go_ref ctxt' body) end
+      | sub_ref _ _ = NONE;
+  in
+    perhaps (case mode of Reference => go_ref ctxt0 | _ => go skel0 ctxt0) t0
+  end;
+
+fun bottom_fixpoint_skel_term opts step = bottom_fixpoint_gen_term Skeleton opts step;
+
+fun bottom_fixpoint_term_mode mode opts rew =
+  bottom_fixpoint_gen_term mode opts
+    (fn ctxt => fn t => Option.map (rpair skel0) (rew ctxt t));
+
+fun bottom_fixpoint_term opts rew = bottom_fixpoint_term_mode No_Skeleton opts rew;
+
+
+(** entry points **)
+
+(*PROTOTYPE ONLY: the explicit three-way switch the comparison is built on.*)
+fun rewrite_conv_mode Skeleton opts net = bottom_fixpoint_skel_conv opts (rewrs_net_skel_conv net)
+  | rewrite_conv_mode mode opts net = bottom_fixpoint_conv_mode mode opts (rewrs_net_conv net);
+
+fun rewrite_term_mode Skeleton opts net = bottom_fixpoint_skel_term opts (rewrs_net_skel_term net)
+  | rewrite_term_mode mode opts net = bottom_fixpoint_term_mode mode opts (rewrs_net_term net);
+
+(*Skeleton pruning is not a knob.  With conditions (a), (b) and (c) in place it does
+  not change what is produced -- only how many nodes are visited on the way -- so
+  there is nothing for a caller to choose.  The three-way `mode' switch below it
+  exists for the correctness comparison and is test-only.*)
+fun rewrite_conv_options opts net ctxt = rewrite_conv_mode Skeleton opts net ctxt;
+fun rewrite_conv net = rewrite_conv_options default_options net;
+fun rewrite_cterm net ctxt = Thm.rhs_of o rewrite_conv net ctxt;
+fun rewrite_rule net ctxt = Conv.fconv_rule (rewrite_conv net ctxt);
+
+fun rewrite_term_options opts net ctxt = rewrite_term_mode Skeleton opts net ctxt;
+fun rewrite_term net = rewrite_term_options default_options net;
+
+
+end;
