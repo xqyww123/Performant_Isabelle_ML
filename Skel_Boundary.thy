@@ -192,4 +192,16 @@ in
 end;
 \<close>
 
+ML \<open>
+(*DC8 (MERELY_REWRITE_EAGER_BETA_PLAN.md section 8.4b): the default step limit is a
+  decision, not an accident.  The value is not exported, so pin the source text.*)
+let
+  val src = File.read (Path.append (Resources.master_directory \<^theory>)
+                        (Path.explode "library/merely_rewrite.ML"));
+in
+  if String.isSubstring "val default_step_limit = SOME 4000000;" src then ()
+  else error "DC8: default_step_limit is not SOME 4000000"
+end
+\<close>
+
 end

@@ -196,4 +196,22 @@ val _ = map (fn n =>
   [25, 50];
 \<close>
 
+section \<open>W4: a duplicating beta redex -- the load the eager contraction adds\<close>
+
+text \<open>
+  `(%x. mk x x) BIG' with one rule per leaf value of BIG.  The traversal contracts
+  the redex first (call-by-name, at the descent position) and then rewrites the
+  leaves of BOTH copies -- roughly twice the visits of the tree alone.  W1-W3 have
+  no redex anywhere and so cannot see the beta change at all; this row is where its
+  cost lives.  The other direction (a redex HIDING work, where contraction makes
+  the run cheaper) is measured by the fuzz corpus, not here.
+\<close>
+
+ML \<open>
+val dup_tree = tree 64 8 0;
+val _ = row ctxt0 "W4 duplicating redex over W1 tree  " 11
+          (Merely_Rewrite.make_rules rules1)
+          (Thm.cterm_of ctxt0 (Abs ("x", natT, mkC $ Bound 0 $ Bound 0) $ dup_tree));
+\<close>
+
 end

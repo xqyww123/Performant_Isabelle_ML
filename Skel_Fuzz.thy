@@ -70,7 +70,7 @@ fun gen_term d bs =
     | 2 => #1 (pick binary) $ gen_term (d - 1) bs $ gen_term (d - 1) bs
     | 3 => #1 (pick binary) $ gen_term (d - 1) bs $ gen_term (d - 1) bs
     | 4 => qhC $ Abs ("u", natT, gen_term (d - 1) (0 :: map (fn i => i + 1) bs))
-    | _ => (*an explicit beta-redex, which the module must NOT contract on its own*)
+    | _ => (*an explicit beta-redex: the module must contract it eagerly*)
         Abs ("v", natT, gen_term (d - 1) (0 :: map (fn i => i + 1) bs)) $ gen_term (d - 1) bs);
 
 (*random term over symbols of level < lvl, with holes taken from `holes' -- each hole
@@ -143,6 +143,17 @@ fun gen_rule i =
         val rhs = gen_rhs lvl holes' 2 [];
       in mk_thm (Logic.mk_equals (lhs, rhs)) end
   end;
+
+(*LHS a bare unary symbol (so it can match in function position); RHS an Abs.
+  Termination: body uses only symbols of level below the head's, and Bound 0 is
+  passed as a hole so gen_rhs places it at most once -- nothing is duplicated.
+  Without this family no generated rule has an Abs-headed right-hand side that can
+  land in function position, and the reassembly-manufactured redexes the module
+  must contract are never exercised.*)
+fun gen_rule_beta _ =
+  let val (s, lvl) = pick (filter (fn (_, l) => l >= 2) unary)
+  in mk_thm (Logic.mk_equals (s, Abs ("x", natT, gen_rhs lvl [Bound 0] 2 []))) end;
+fun gen_rule2 i = if rand 4 = 0 then gen_rule_beta i else gen_rule i;
 \<close>
 
 ML \<open>
@@ -159,6 +170,28 @@ fun outcome res =
   | Exn.Exn (Merely_Rewrite.DIVERGES (Merely_Rewrite.Growth _, _)) => "DIVERGES Growth"
   | Exn.Exn e => "EXN " ^ Runtime.exn_message e);
 
+(*O1, the beta-normal-fixpoint invariant: an output the module reports as OK must
+  contain no beta redex, and no rule of the net may still fire anywhere in it
+  (binders opened as fresh frees).  The only oracle that catches a defect made
+  identically in both layers, and the only one usable on loose-Bound terms -- but
+  it is dead unless the corpus contains `gen_rule_beta' rules.*)
+fun o1_violation net t =
+  let
+    fun has_redex (Abs _ $ _) = true
+      | has_redex (t $ u) = has_redex t orelse has_redex u
+      | has_redex (Abs (_, _, b)) = has_redex b
+      | has_redex _ = false;
+    fun still_fires t =
+      (case Merely_Rewrite.rewrs_net_term net ctxt0 t of
+         NONE => false
+       | SOME t' => not (t aconv t'))
+      orelse
+      (case t of
+         u $ v => still_fires u orelse still_fires v
+       | Abs (a, T, b) => still_fires (subst_bound (Free ("_o1_" ^ a, T), b))
+       | _ => false);
+  in has_redex t orelse still_fires t end;
+
 fun counted mk =
   let
     val n = Unsynchronized.ref 0;
@@ -168,7 +201,7 @@ fun counted mk =
 fun one_round () =
   let
     val nrules = 3 + rand 6;
-    val rules = map gen_rule (1 upto nrules);
+    val rules = map gen_rule2 (1 upto nrules);
     val net = Merely_Rewrite.make_rules rules;
     val input = gen_term (4 + rand 3) [];
     val ct = Thm.cterm_of ctxt0 input;
@@ -204,7 +237,8 @@ fun one_round () =
     val o_un = run cv_un;
     val t_ref = run_t rw_ref;
     val t_no = run_t rw_no;
-    val t_sk = run_t rw_sk;
+    val sk_res = Exn.capture (fn () => rw_sk input) ();
+    val t_sk = outcome sk_res;
   in
     {rules = rules, input = input,
      agree_fork = o_ref = o_no, agree_prune = o_no = o_sk, agree_unguarded = o_sk = o_un,
@@ -212,13 +246,15 @@ fun one_round () =
      diverged = String.isPrefix "DIVERGES" o_sk, broken = String.isPrefix "EXN" o_sk,
      pruned = ! n_sk < ! n_no, visits = (! n_ref, ! n_no, ! n_sk),
      rewrote = (o_sk <> "OK " ^ dump input),
+     o1 = (case sk_res of Exn.Res t => o1_violation net t | _ => false),
      texts = (o_ref, o_no, o_sk, o_un), ttexts = (t_ref, t_no, t_sk)}
   end;
 
 fun fuzz start n =
   let
     val bad = Unsynchronized.ref ([]: (int * string) list);
-    val stats = Unsynchronized.ref (0, 0, 0, 0, 0);   (*pruned, diverged, broken, unguarded-differs, rewrote*)
+    val o1bad = Unsynchronized.ref ([]: (int * string) list);
+    val stats = Unsynchronized.ref (0, 0, 0, 0, 0);   (*pruned, diverged, broken, unguarded-differs, changed*)
     fun step i =
       let
         val _ = srand (start + i);
@@ -229,32 +265,35 @@ fun fuzz start n =
            c + (if #broken r then 1 else 0), d + (if #agree_unguarded r then 0 else 1),
            e + (if #rewrote r then 1 else 0));
         val (t_ref, t_no, t_sk, _) = #texts r;
-      in
-        if #agree_fork r andalso #agree_prune r andalso #agree_tfork r
-           andalso #agree_tprune r andalso #agree_cross r then ()
-        else
-          bad := (start + i,
+        fun record () =
+          (start + i,
             cat_lines
               (["seed " ^ string_of_int (start + i),
                 "input " ^ Syntax.string_of_term pctxt (#input r)] @
                map (fn th => "rule  " ^ Thm.string_of_thm ctxt0 th) (#rules r) @
                ["conv ref " ^ t_ref, "conv no  " ^ t_no, "conv skl " ^ t_sk,
                 "term ref " ^ #1 (#ttexts r), "term no  " ^ #2 (#ttexts r),
-                "term skl " ^ #3 (#ttexts r)])) :: ! bad
+                "term skl " ^ #3 (#ttexts r)]));
+        val _ = if #o1 r then o1bad := record () :: ! o1bad else ();
+      in
+        if #agree_fork r andalso #agree_prune r andalso #agree_tfork r
+           andalso #agree_tprune r andalso #agree_cross r then ()
+        else bad := record () :: ! bad
       end;
     val _ = List.app step (1 upto n);
     val (a, b, c, d, e) = ! stats;
   in
     writeln
       ("fuzz: " ^ string_of_int n ^ " rounds from seed " ^ string_of_int start ^
-       "\n  rounds in which at least one rewrite happened: " ^ string_of_int e ^
+       "\n  rounds in which the output differs from the input: " ^ string_of_int e ^
        "\n  rounds where pruning actually fired: " ^ string_of_int a ^
        "\n  rounds that hit a divergence guard:  " ^ string_of_int b ^
        "\n  rounds that raised something else:   " ^ string_of_int c ^
        "\n  rounds where the UNGUARDED skeleton disagrees: " ^ string_of_int d ^
+       "\n  O1 beta-normal-fixpoint violations:  " ^ string_of_int (length (! o1bad)) ^
        "\n  MISMATCHES: " ^ string_of_int (length (! bad)));
-    if null (! bad) then ()
-    else error (cat_lines (map #2 (take 3 (! bad))))
+    if null (! bad) andalso null (! o1bad) then ()
+    else error (cat_lines (map #2 (take 3 (! bad)) @ map #2 (take 3 (! o1bad))))
   end;
 \<close>
 
@@ -272,36 +311,45 @@ fun loosen d t =
 fun fuzz_loose start n =
   let
     val bad = Unsynchronized.ref ([]: string list);
+    val o1bad = Unsynchronized.ref ([]: string list);
     val stats = Unsynchronized.ref (0, 0);
     fun step i =
       let
         val _ = srand (start + i);
-        val rules = map gen_rule (1 upto (3 + rand 6));
+        val rules = map gen_rule2 (1 upto (3 + rand 6));
         val net = Merely_Rewrite.make_rules rules;
         val input = loosen 0 (gen_term (4 + rand 3) []);
         fun run mode =
-          outcome (Exn.capture (fn () =>
-            Merely_Rewrite.rewrite_term_mode mode opts net ctxt0 input) ());
-        val a = run Merely_Rewrite.Reference;
-        val b = run Merely_Rewrite.No_Skeleton;
-        val c = run Merely_Rewrite.Skeleton;
+          Exn.capture (fn () =>
+            Merely_Rewrite.rewrite_term_mode mode opts net ctxt0 input) ();
+        val ra = run Merely_Rewrite.Reference;
+        val rb = run Merely_Rewrite.No_Skeleton;
+        val rc = run Merely_Rewrite.Skeleton;
+        val (a, b, c) = (outcome ra, outcome rb, outcome rc);
         val (p, q) = ! stats;
         val _ = stats := (p + (if c = "OK " ^ dump input then 0 else 1),
                           q + (if String.isPrefix "EXN" c then 1 else 0));
+        fun record () =
+          cat_lines (["seed " ^ string_of_int (start + i), "in  " ^ dump input] @
+            map (fn th => "rule " ^ Thm.string_of_thm ctxt0 th) rules @
+            ["ref " ^ a, "no  " ^ b, "skl " ^ c]);
+        val _ =
+          (case rc of
+             Exn.Res t => if o1_violation net t then o1bad := record () :: ! o1bad else ()
+           | _ => ());
       in
-        if a = b andalso b = c then ()
-        else bad := cat_lines (["seed " ^ string_of_int (start + i), "in  " ^ dump input] @
-               map (fn th => "rule " ^ Thm.string_of_thm ctxt0 th) rules @
-               ["ref " ^ a, "no  " ^ b, "skl " ^ c]) :: ! bad
+        if a = b andalso b = c then () else bad := record () :: ! bad
       end;
     val _ = List.app step (1 upto n);
     val (p, q) = ! stats;
   in
     writeln ("fuzz_loose: " ^ string_of_int n ^ " rounds from seed " ^ string_of_int start ^
-      "\n  rounds in which at least one rewrite happened: " ^ string_of_int p ^
+      "\n  rounds in which the output differs from the input: " ^ string_of_int p ^
       "\n  rounds that raised something: " ^ string_of_int q ^
+      "\n  O1 beta-normal-fixpoint violations: " ^ string_of_int (length (! o1bad)) ^
       "\n  MISMATCHES: " ^ string_of_int (length (! bad)));
-    if null (! bad) then () else error (cat_lines (take 3 (! bad)))
+    if null (! bad) andalso null (! o1bad) then ()
+    else error (cat_lines (take 3 (! bad) @ take 3 (! o1bad)))
   end;
 \<close>
 

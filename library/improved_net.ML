@@ -47,7 +47,41 @@ end
 *)
 
 
-structure iNet : NET =
+(*A copy of `NET' (Pure/net.ML:1-28) with one change: `key' is made concrete, so
+  that white-box tests can inspect the encoding.  It is a copy and not an `include'
+  because SML will not let a signature re-specify a type the include brought in
+  ("Type (key) is already present in this signature").  Re-sync this block if Pure's
+  `NET' changes; the ascription at the bottom of this file is what catches drift.*)
+signature INET =
+sig
+  datatype key = CombK | VarK | AtomK of string
+  val key_of_term: term -> key list
+  val encode_type: typ -> term
+  type 'a net
+  val empty: 'a net
+  val is_empty: 'a net -> bool
+  exception INSERT
+  val insert: ('a * 'a -> bool) -> key list * 'a -> 'a net -> 'a net
+  val insert_term: ('a * 'a -> bool) -> term * 'a -> 'a net -> 'a net
+  val insert_safe: ('a * 'a -> bool) -> key list * 'a -> 'a net -> 'a net
+  val insert_term_safe: ('a * 'a -> bool) -> term * 'a -> 'a net -> 'a net
+  val insert_term_last: ('a * 'a -> bool) -> term * 'a -> 'a net -> 'a net
+  val insert_term_last_safe: ('a * 'a -> bool) -> term * 'a -> 'a net -> 'a net
+  exception DELETE
+  val delete: ('b * 'a -> bool) -> key list * 'b -> 'a net -> 'a net
+  val delete_term: ('b * 'a -> bool) -> term * 'b -> 'a net -> 'a net
+  val delete_safe: ('b * 'a -> bool) -> key list * 'b -> 'a net -> 'a net
+  val delete_term_safe: ('b * 'a -> bool) -> term * 'b -> 'a net -> 'a net
+  val lookup: 'a net -> key list -> 'a list
+  val match_term: 'a net -> term -> 'a list
+  val unify_term: 'a net -> term -> 'a list
+  val entries: 'a net -> 'a list
+  val subtract: ('b * 'a -> bool) -> 'a net -> 'b net -> 'b list
+  val merge: ('a * 'a -> bool) -> 'a net * 'a net -> 'a net
+  val content: 'a net -> 'a list
+end;
+
+structure iNet : INET =
 struct
 
 datatype key = CombK | VarK | AtomK of string;
@@ -161,10 +195,14 @@ exception INSERT;       (*duplicate item in the net*)
   Creates node if not already present.
   eq is the equality test for items.
   The empty list of keys generates a Leaf node, others a Net node.
-*)
-fun insert eq (keys,x) net =
+
+  The leaf row decides same-key priority: `insert' head-conses, so among items
+  with the same key the LAST inserted is retrieved FIRST (and consumers such as
+  `Merely_Rewrite' rely on that as override semantics).  `insert_term_last'
+  appends at the leaf instead, for callers that need first-inserted-first.*)
+fun gen_insert leaf_add eq (keys,x) net =
   let fun ins1 ([], Leaf xs) =
-            if member eq xs x then  raise INSERT  else Leaf(x::xs)
+            if member eq xs x then  raise INSERT  else Leaf(leaf_add (xs, x))
         | ins1 (keys, Leaf[]) = ins1 (keys, emptynet)   (*expand empty...*)
         | ins1 (CombK :: keys, Net{comb,var,atoms}) =
             Net{comb=ins1(keys,comb), var=var, atoms=atoms}
@@ -175,10 +213,16 @@ fun insert eq (keys,x) net =
             in  Net{comb=comb, var=var, atoms=atoms'}  end
   in  ins1 (keys,net)  end;
 
+fun insert eq = gen_insert (fn (xs, x) => x :: xs) eq;
+
 fun insert_term eq (t, x) = insert eq (key_of_term (norm t), x);
 
 fun insert_safe eq entry net = insert eq entry net handle INSERT => net;
 fun insert_term_safe eq entry net = insert_term eq entry net handle INSERT => net;
+
+fun insert_term_last eq (t, x) =
+  gen_insert (fn (xs, x) => xs @ [x]) eq (key_of_term (norm t), x);
+fun insert_term_last_safe eq entry net = insert_term_last eq entry net handle INSERT => net;
 
 
 (*** Deletion from a discrimination net ***)
@@ -325,3 +369,8 @@ fun merge eq (net1, net2) =
 fun content net = map #2 (dest net);
 
 end;
+
+(*Fails to compile if `INET' ever stops covering `NET' -- either because an edit
+  here dropped a member, or because Pure added one that was not copied over.  Local
+  so the name does not escape; nothing should refer to it.*)
+local structure iNet_Covers_NET : NET = iNet in end;

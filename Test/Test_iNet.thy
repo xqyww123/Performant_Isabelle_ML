@@ -227,4 +227,41 @@ in
 end
 \<close>
 
+(* Test 11: insert_term_last -- same-key order, and order-preserving rebuild *)
+ML \<open>
+local
+  val T = dummyT;
+  val eq = (fn ((_, a), (_, b)) => a = b) : (term * string) * (term * string) -> bool;
+  val key = Const ("k", T) $ Var (("x", 0), T);
+  fun item s = (key, s);
+  fun ins_head x net = iNet.insert_term eq (key, x) net;
+  fun ins_last x net = iNet.insert_term_last eq (key, x) net;
+  fun names net = map #2 (iNet.match_term net (Const ("k", T) $ Const ("c", T)));
+  fun assert_order msg expected actual =
+    if expected = actual then ()
+    else error ("FAIL: " ^ msg ^
+                "\n  expected: " ^ ML_Syntax.print_list ML_Syntax.print_string expected ^
+                "\n  actual:   " ^ ML_Syntax.print_list ML_Syntax.print_string actual);
+in
+val _ =
+  let
+    (*head-insert: last registered first -- the shipped behaviour, unchanged*)
+    val net_head = iNet.empty |> ins_head (item "a") |> ins_head (item "b") |> ins_head (item "c");
+    val _ = assert_order "insert_term same-key order (last first)" ["c", "b", "a"] (names net_head);
+    (*tail-insert: first registered first*)
+    val net_last = iNet.empty |> ins_last (item "a") |> ins_last (item "b") |> ins_last (item "c");
+    val _ = assert_order "insert_term_last same-key order (first first)" ["a", "b", "c"] (names net_last);
+    (*dest + rebuild with insert_term_last preserves the retrieval order, which the
+      head-insert rebuild reverses (see the note at `add_rule' in merely_rewrite.ML)*)
+    val rebuilt =
+      fold (fn x => iNet.insert_term_last eq (key, x)) (iNet.content net_last) iNet.empty;
+    val _ = assert_order "insert_term_last rebuild preserves order" (names net_last) (names rebuilt);
+    val _ =
+      (iNet.insert_term_last eq (key, item "a") net_last; error "FAIL: duplicate not rejected")
+        handle iNet.INSERT => ();
+    val _ = iNet.insert_term_last_safe eq (key, item "a") net_last;
+  in writeln "Test 11 (insert_term_last): pass" end;
+end
+\<close>
+
 end

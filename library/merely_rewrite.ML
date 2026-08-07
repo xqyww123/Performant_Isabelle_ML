@@ -1,19 +1,30 @@
 (* Rewriting to a fixpoint with rules indexed by a discrimination net (iNet).
 
    THE NAME IS THE SPECIFICATION.  "Merely" is literal: pick candidate rules out of
-   an iNet, rewrite bottom-up to a fixpoint, and perform NO normalisation of any
-   kind.  No conditional rewriting, no permutative or associative rules, no
-   object-logic conversion, no simpset, no congruence rules, no solver.  Anything
-   that needs those wants `Raw_Simplifier'.  The value here is what is ABSENT: the
-   output is the input with the matched redexes replaced and nothing else touched.
+   an iNet, rewrite bottom-up to a fixpoint, contract beta redexes on the way, and
+   perform NO eta normalisation.  No conditional rewriting, no permutative or
+   associative rules, no object-logic conversion, no simpset, no congruence rules,
+   no solver.  Anything that needs those wants `Raw_Simplifier'.  The value here is
+   what is ABSENT: no eta contraction and no binder renaming, so untouched material
+   comes back exactly as it went in.  Beta redexes are the one exception, contracted
+   eagerly and on purpose: material that exists only in the beta normal form is
+   invisible to a subterm traversal (a rule matching `ff 2' never fires inside
+   `(%x. gg (ff x)) $ 2'), and a rule whose right-hand side is an abstraction
+   manufactures such a redex mid-traversal.  `Pattern.rewrite_term' contracts in
+   the same places (more_pattern.ML:67, 73-75).
 
    Why not something existing.  `Raw_Simplifier.rewrite' has the right traversal but
-   normalises: a rule firing at a node composes the equation with
-   `Thm.eta_conversion' of that node, so parts no rule touched come back
-   eta-contracted -- for output read by a human or an LLM that is a real loss.
-   `Pure/conv.ML' normalises nothing, but none of its four traversals re-scans the
-   RESULT of a rewrite in place, so a fixpoint costs `Conv.repeat_changed_conv'
-   around the whole term, i.e. up to O(depth) full sweeps.
+   eta-contracts and renames binders: a rule firing at a node composes the equation
+   with `Thm.eta_conversion' of that node, so parts no rule touched come back
+   eta-contracted with the user's binder names gone -- for output read by a human or
+   an LLM that is a real loss.  `Pure/conv.ML' does no such damage, but none of its
+   four traversals re-scans the RESULT of a rewrite in place, so a fixpoint costs
+   `Conv.repeat_changed_conv' around the whole term, i.e. up to O(depth) full sweeps.
+
+   Candidates are tried most-specific-first across keys: a general rule never
+   shadows a specific one.  `Raw_Simplifier' does the opposite (`sort_rrules'
+   reverses the net list, so its most general candidate fires first); the
+   divergence is deliberate.
 
    THE ONE STRUCTURAL RULE.  The traversal is built on `Conv.sub_conv' and its fork
    `sub_conv_skel', NEVER on a case table over `Pure.imp' / `Pure.all' / `&&&'.  A
@@ -34,6 +45,12 @@
        measure, which is why `Term.size_of_term' is used and the smart one in
        library/term_size.ML is not.
 
+   A beta contraction is accounted exactly like a rule step: it passes the step
+   limit and its size delta is charged against the growth bound, so the identity
+   above still holds.  (On well-typed input beta alone is strongly normalising;
+   the accounting is there so that "steps" stays an honest number and argument
+   duplication -- `(%x. f x x) BIG' -- stays inside the growth budget.)
+
    Divergence that neither repeats a term nor grows one is caught by neither.
 
    TWO LAYERS.  `Thm.cterm_of' REJECTS a term containing a loose `Bound' ("Loose
@@ -45,7 +62,8 @@
    SKELETON PRUNING.  Re-traversing the whole result of every hit is O(size^2) worst
    case.  A skeleton runs alongside the term and records where material came from:
    it is the rule's right-hand side, in which a `Var' is a HOLE (material matched
-   out of the term, already normal because the traversal is bottom-up, so skipped)
+   out of the term, already in beta normal form -- condition (a) keeps a skeleton
+   only when the whole step result is deeply beta-normal -- so skipped)
    and everything else is SHELL (new material from the rule, possibly a redex
    itself, so traversed).  The projections and `is_hole' are defined ONCE and both
    layers use them: the skeleton discipline is the one thing they must never
@@ -74,17 +92,22 @@
    indirect call in the hottest loop of both.  The cross-layer differential test is
    what keeps the two `go' functions from drifting.
 
-   THREE DELIBERATE DEVIATIONS FROM `Pattern.rewrite_term', all so that the two
+   TWO DELIBERATE DEVIATIONS FROM `Pattern.rewrite_term', both so that the two
    layers agree with each other:
 
-   1. a beta redex is not a rewrite step (more_pattern.ML:70, 77 contracts one
-      wherever it finds it); this module contracts nothing it was not asked to;
-   2. but the result of each step IS `Envir.beta_norm'-ed, because that is what
+   1. the result of each step IS `Envir.beta_norm'-ed, because that is what
       `Conv.rewr_conv' does at the conv layer.  If that deep beta is ever dropped,
-      BOTH layers must drop it in one edit;
-   3. it goes under a binder with `Variable.next_bound' + `Term.used_free' + its own
+      BOTH layers must drop it in one edit.  (It is also load-bearing for skeleton
+      condition (a) and for the loose-Bound bindings contract of the PLPR pattern matcher
+      (Phi_Logic_Programming_Reasoner/library/pattern.ML:26-30, NOT Pure) --
+      do not remove it.)
+   2. it goes under a binder with `Variable.next_bound' + `Term.used_free' + its own
       `open_abs' rather than `variant_absfree'; see `dest_abs' for why each of the
       obvious alternatives is wrong.
+
+   (An earlier third deviation -- "a beta redex is not a rewrite step" -- was
+   withdrawn 2026-08: it made rewrites that exist only in the beta normal form
+   silently unreachable.  Beta contraction now mirrors more_pattern.ML:67/:73-75.)
 
    Measurements, soundness arguments and review history: NET_REWRITE_PLAN.md.
 
@@ -101,7 +124,16 @@ sig
      module does not convert object-logic equations and does not want to -- that
      conversion is logic-specific and `Raw_Simplifier.mksimps' (raw_simplifier.ML:67)
      is the canonical one.  Pass its output.  Anything else is rejected by
-     `dest_rule'. *)
+     `dest_rule'.
+
+     Among rules with the same net key, the LAST one added fires first --
+     override semantics: a later, better rule takes effect without deleting the
+     old one.  This is the OPPOSITE of Raw_Simplifier, where `sort_rrules'
+     makes the first-registered rule win.
+
+     `make_rules (dest_rules net)' REVERSES the relative order of same-key
+     rules (both walks are head-first over leaf lists).  Do not snapshot and
+     rebuild a rule set whose same-key order matters. *)
   val empty_rules: rules
   val add_rule: thm -> rules -> rules
   val del_rule: thm -> rules -> rules
@@ -122,7 +154,11 @@ sig
      net is only where the candidates come from; the caller decides where in the
      term this gets applied.  `Pure/conv.ML' already offers three traversal orders
      to feed it to (`Conv.bottom_conv', `Conv.top_conv', `Conv.top_sweep_conv');
-     the one this module adds is bottom-up with in-place re-scanning, below. *)
+     the one this module adds is bottom-up with in-place re-scanning, below.
+
+     The single-step functions contract no beta redexes; only the traversals
+     below do.  Composing them with `Conv.top_sweep_conv' therefore does NOT
+     reproduce `rewrite_conv' on a term containing one. *)
   val single_step_rewrite_conv: (Proof.context -> 'a -> conv) -> 'a iNet.net -> Proof.context -> conv
   val rewrs_net_conv: rules -> Proof.context -> conv
 
@@ -200,7 +236,19 @@ sig
      surrounding context happens to say, so an explicit argument wins.
 
      `step_limit' is doubly optional on purpose: `NONE' is "do not override",
-     `SOME NONE' is "override, with no limit at all". *)
+     `SOME NONE' is "override, with no limit at all".
+
+     The traversal itself contracts beta redexes (accounted like steps); a
+     caller-supplied step never sees them and cannot veto them.  Consequently,
+     with an empty rule set these are NOT the identity on a term containing a
+     beta redex.
+
+     The step MUST return an equation whose left-hand side is the cterm it was
+     given.  This is not checked: a step that equates some OTHER term burns the
+     whole step budget and then reports that unrelated term.  A step returning
+     a non-equation is caught and re-raised as `Fail' with the offending
+     theorem (a THM/CTERM/TERM/TYPE exception would be swallowed by
+     `else_conv' as "no rewrite here"). *)
   type options =
     {size_check: bool option,
      step_limit: int option option,
@@ -220,14 +268,17 @@ sig
     options -> (Proof.context -> skel_term) -> Proof.context -> term -> term
 
   (* TEST-ONLY -- the switch the correctness comparison is built on.  `Reference' is
-     the traversal exactly as it was before skeletons, kept as the oracle;
+     the traversal as it was before skeletons existed, PLUS the same beta clauses
+     as the live traversals -- an oracle must share deliberate semantics, or the
+     three-way comparison reports the design as a bug.
      `No_Skeleton' is the forked traversal fed nothing but `skel0'.  So `Reference'
      vs `No_Skeleton' tests the FORK, `No_Skeleton' vs `Skeleton' tests the PRUNING.
      `Reference' is to be moved into a test-only file and deleted from here.
 
      There is deliberately no Config to turn pruning off: with conditions (a), (b)
      and (c) in place it does not change what comes out, only how many nodes are
-     visited. *)
+     visited (re-measured after the beta change: pruning rate unchanged, see
+     MERELY_REWRITE_EAGER_BETA_PLAN.md). *)
   datatype mode = Reference | No_Skeleton | Skeleton
   val bottom_fixpoint_conv_mode:
     mode -> options -> (Proof.context -> conv) -> Proof.context -> conv
@@ -236,7 +287,8 @@ sig
   val rewrite_conv_mode: mode -> options -> rules -> Proof.context -> conv
   val rewrite_term_mode: mode -> options -> rules -> Proof.context -> term -> term
 
-  (* proof-producing entry points *)
+  (* proof-producing entry points.  With an empty rule set these are NOT the
+     identity: beta redexes are still contracted. *)
   val rewrite_conv: rules -> Proof.context -> conv
   val rewrite_conv_options: options -> rules -> Proof.context -> conv
   val rewrite_cterm: rules -> Proof.context -> cterm -> cterm
@@ -253,7 +305,15 @@ sig
      rule whose right-hand side puts a hole under a NEW binder can capture it.  That
      is measured in Skel_Loose and it is not a regression --
      `Pattern.rewrite_term', and hence `Object_Logic.atomize_term', behaves the same
-     way. *)
+     way.
+
+     A beta contraction at this layer uses `Term.subst_bound', which renumbers the
+     remaining loose `Bound's down by one.  That is correct here -- the binder is
+     genuinely consumed -- unlike in `open_abs' below, where the binder survives
+     and nothing may shift.
+
+     With an empty rule set this is NOT the identity: beta redexes are still
+     contracted. *)
   val rewrite_term: rules -> Proof.context -> term -> term
   val rewrite_term_options: options -> rules -> Proof.context -> term -> term
 
@@ -375,7 +435,7 @@ fun has_extra_var (lhs, rhs) =
 
   `mkabs' is reached exactly when `is = ints_of pargs' is non-empty, i.e. exactly
   when a `Var' occurs applied in the pattern -- which is exactly what
-  `Pattern.first_order' (Pure/more_pattern.ML:33-37) decides.  The test is therefore
+  `Pattern.first_order' (Pure/more_pattern.ML:34-37) decides.  The test is therefore
   not an approximation of the danger; it is the same condition.
 
   IT IS HOWEVER THE CONSERVATIVE FORM, per-RULE: a rule that *could* synthesise
@@ -556,7 +616,7 @@ type options =
   than the hang.  Hence the value below rather than something larger.  Numbers in
   NET_REWRITE_PLAN.md.*)
 val default_size_check = true;
-val default_step_limit = SOME 3000000;
+val default_step_limit = SOME 4000000;
 
 val default_options: options = NONE;
 (*Every guard off: no step limit, no growth bound.  NOTHING then stops a divergent
@@ -620,11 +680,14 @@ fun make_guard opts ctxt0 t0 =
        else ());
   in {before_step = before_step, after_step = after_step} end;
 
-(*A FORK of `Conv.sub_conv' (Pure/conv.ML:131), threading a skeleton.  Two reasons
-  the original cannot be used: its callback takes only a context, so there is
-  nowhere to put the skeleton, and it is `comb_conv (conv ctxt)', which gives the
-  function part and the argument part the SAME conversion, where the two halves need
-  DIFFERENT skeletons.
+(*A FORK of `Conv.sub_conv' (Pure/conv.ML:131), threading a skeleton and the two
+  guards.  Three reasons the original cannot be used: its callback takes only a
+  context, so there is nowhere to put the skeleton; it is `comb_conv (conv ctxt)',
+  which gives the function part and the argument part the SAME conversion, where
+  the two halves need DIFFERENT skeletons; and the descent must contract a beta
+  redex BEFORE descending, charged against the guards -- which live inside
+  `bottom_fixpoint_gen_conv', so they have to be threaded in as an argument
+  (`(bef, aft)' below), or the two layers diverge at different moments.
 
   Two things kept from the original that a reviewer should check first: NO case
   analysis on the shape of the term (the three branches are "application",
@@ -633,13 +696,44 @@ fun make_guard opts ctxt0 t0 =
   and the EXTENDED context that `Conv.abs_conv' hands back, which is what the body
   must be traversed under.  See the header for what dropping the latter costs.
 
-  Fed `skel0' everywhere this degenerates to `Conv.sub_conv'.*)
-fun sub_conv_skel conv skel ctxt =
+  The beta branch dispatches BEFORE the `else_conv' chain on purpose:
+  `Conv.combination_conv' SUCCEEDS on a redex, so a branch placed after it would
+  never run -- the redex would be descended into instead of contracted first, and
+  the call-by-name property (a discarded divergent argument terminates) would be
+  silently lost.  After the contraction the result is re-scanned under `skel0',
+  mirroring more_pattern.ML:73-75.
+
+  Fed `skel0' and inert guards this degenerates to `Conv.sub_conv' plus eager
+  beta contraction.*)
+fun sub_conv_orig conv skel ctxt =
   Conv.combination_conv (conv (skel_fun skel) ctxt) (conv (skel_arg skel) ctxt)
   else_conv
   Conv.abs_conv (fn (_, ctxt') => conv (skel_body skel) ctxt') ctxt
   else_conv
   Conv.all_conv;
+
+fun sub_conv_skel (bef, aft) conv skel ctxt ct =
+  (case Thm.term_of ct of
+     Abs _ $ _ =>
+       let
+         val _ = bef (Thm.term_of ct);
+         val eq = Thm.beta_conversion false ct;
+         val ct2 = Thm.rhs_of eq;
+         val _ = aft (Thm.term_of ct, Thm.term_of ct2);
+        in Thm.transitive eq (conv skel0 ctxt ct2) end
+   | _ => sub_conv_orig conv skel ctxt ct);
+
+(*the same for the `Reference' descent, over `Conv.sub_conv' itself*)
+fun sub_conv_ref (bef, aft) cv ctxt ct =
+  (case Thm.term_of ct of
+     Abs _ $ _ =>
+       let
+         val _ = bef (Thm.term_of ct);
+         val eq = Thm.beta_conversion false ct;
+         val ct2 = Thm.rhs_of eq;
+         val _ = aft (Thm.term_of ct, Thm.term_of ct2);
+        in Thm.transitive eq (cv ctxt ct2) end
+   | _ => Conv.sub_conv cv ctxt ct);
 
 datatype mode = Reference | No_Skeleton | Skeleton;
 
@@ -650,7 +744,8 @@ datatype mode = Reference | No_Skeleton | Skeleton;
 
   i.e. identical except that it does not come back after `conv ctxt' fires.
 
-  `Conv.sub_conv' cannot fail (it ends in `all_conv') and the right operand is
+  `sub_conv_skel' / `sub_conv_ref' cannot fail (their fallback chain ends in
+  `all_conv' and their beta branch always succeeds) and the right operand is
   wrapped in `Conv.try_conv', so the traversal itself never fails: on a term with
   no redex it returns a reflexive theorem.
 
@@ -686,17 +781,37 @@ fun bottom_fixpoint_gen_conv mode opts (step: Proof.context -> skel_conv) ctxt0 
         val _ = before_step (Thm.term_of ct1);
         val (eq, skel') = step ctxt ct1;
         val _ = if Thm.is_reflexive eq then raise CTERM ("changed_conv", [ct1]) else ();
-        val ct2 = Thm.rhs_of eq;
+        val ct2 = Thm.rhs_of eq
+          handle TERM _ =>
+            (*a caller-supplied step returned a non-equation; anything in
+              THM/CTERM/TERM/TYPE would be swallowed by the surrounding
+              `try_conv' as "no rewrite here"*)
+            raise Fail ("Merely_Rewrite: step returned a non-equation: " ^
+              Thm.string_of_thm ctxt eq);
         val _ = after_step (Thm.term_of ct1, Thm.term_of ct2);
       in (eq, ct2, skel') end;
+
+    (*the step position: a redex the descent's reassembly has just built (a rule
+      rewrote the function part to an abstraction) is contracted as one accounted
+      step, `skel0' so the result is re-scanned -- more_pattern.ML:67's counterpart*)
+    fun step_at ctxt ct1 =
+      (case Thm.term_of ct1 of
+         Abs _ $ _ =>
+           let
+             val _ = before_step (Thm.term_of ct1);
+             val eq = Thm.beta_conversion false ct1;
+             val ct2 = Thm.rhs_of eq;
+             val _ = after_step (Thm.term_of ct1, Thm.term_of ct2);
+            in (eq, ct2, skel0) end
+       | _ => accounted_step ctxt ct1);
 
     (*the traversal as it was before skeletons existed; kept as the oracle the other
       one is compared against, and to be deleted once that comparison is over.*)
     fun go_ref ctxt ct =
-      (Conv.sub_conv go_ref ctxt
+      (sub_conv_ref (before_step, after_step) go_ref ctxt
          then_conv
        Conv.try_conv (fn ct1 =>
-         let val (eq, ct2, _) = accounted_step ctxt ct1
+         let val (eq, ct2, _) = step_at ctxt ct1
          in Thm.transitive eq (go_ref ctxt ct2) end)) ct;
 
     (*the same, with the skeleton threaded through.  A hole is passed over with a
@@ -705,10 +820,10 @@ fun bottom_fixpoint_gen_conv mode opts (step: Proof.context -> skel_conv) ctxt0 
     fun go skel ctxt ct =
       if is_hole skel then Thm.reflexive ct
       else
-        (sub_conv_skel go skel ctxt
+        (sub_conv_skel (before_step, after_step) go skel ctxt
            then_conv
          Conv.try_conv (fn ct1 =>
-           let val (eq, ct2, skel') = accounted_step ctxt ct1
+           let val (eq, ct2, skel') = step_at ctxt ct1
            in Thm.transitive eq (go skel' ctxt ct2) end)) ct;
   in
     (case mode of
@@ -799,23 +914,38 @@ fun bottom_fixpoint_gen_term mode opts (step: Proof.context -> skel_term) ctxt0 
           in (fn u => Abs (a, T, abstract_over (v, u)), open_abs v b, ctxt') end
       | dest_abs _ t = raise TERM ("dest_abs", [t]);
 
+    (*the step position, `accounted_step' behind a beta clause -- see the conv
+      layer's `step_at' for what it catches and why the guards are charged*)
+    fun step_at _ (t1 as Abs (_, _, body) $ u) =
+          (before_step t1;
+           let val t2 = Term.subst_bound (u, body); val _ = after_step (t1, t2)
+            in SOME (t2, skel0) end)
+      | step_at ctxt t = accounted_step ctxt t;
+
+    (*In the NONE branch below, `step_at's beta clause is provably dead: `sub'
+      contracts a redex in its first clause, so a term `sub' returns NONE on is
+      never a redex.  It is kept as an invariant guard, not live logic.*)
     fun go skel ctxt t =
       if is_hole skel then NONE
       else
         (case sub skel ctxt t of
           SOME t1 =>
-            (case accounted_step ctxt t1 of
+            (case step_at ctxt t1 of
               SOME (t2, skel') => SOME (perhaps (go skel' ctxt) t2)
             | NONE => SOME t1)
         | NONE =>
-            (case accounted_step ctxt t of
+            (case step_at ctxt t of
               SOME (t1, skel') => SOME (perhaps (go skel' ctxt) t1)
             | NONE => NONE))
 
-    (*the term-level `sub_conv_skel'.  Note what is NOT here: the `(Abs _ $ t)'
-      clause of `Pattern.rewrite_term' (more_pattern.ML:76), which contracts a beta
-      redex found in the term.  This module contracts nothing it was not asked to.*)
-    and sub skel ctxt (t $ u) =
+    (*the term-level `sub_conv_skel'; its first clause is the descent-position beta
+      of more_pattern.ML:73-75 -- contract, then re-scan the contraction under
+      `skel0', and never descend into a redex's own subterms (call-by-name)*)
+    and sub _ ctxt (t1 as Abs (_, _, body) $ u) =
+          (before_step t1;
+           let val t2 = Term.subst_bound (u, body); val _ = after_step (t1, t2)
+            in SOME (perhaps (go skel0 ctxt) t2) end)
+      | sub skel ctxt (t $ u) =
           (case (go (skel_fun skel) ctxt t, go (skel_arg skel) ctxt u) of
             (SOME t', SOME u') => SOME (t' $ u')
           | (SOME t', NONE) => SOME (t' $ u)
@@ -829,15 +959,19 @@ fun bottom_fixpoint_gen_term mode opts (step: Proof.context -> skel_term) ctxt0 
     fun go_ref ctxt t =
       (case sub_ref ctxt t of
         SOME t1 =>
-          (case accounted_step ctxt t1 of
+          (case step_at ctxt t1 of
             SOME (t2, _) => SOME (perhaps (go_ref ctxt) t2)
           | NONE => SOME t1)
       | NONE =>
-          (case accounted_step ctxt t of
+          (case step_at ctxt t of
             SOME (t1, _) => SOME (perhaps (go_ref ctxt) t1)
           | NONE => NONE))
 
-    and sub_ref ctxt (t $ u) =
+    and sub_ref ctxt (t1 as Abs (_, _, body) $ u) =
+          (before_step t1;
+           let val t2 = Term.subst_bound (u, body); val _ = after_step (t1, t2)
+            in SOME (perhaps (go_ref ctxt) t2) end)
+      | sub_ref ctxt (t $ u) =
           (case (go_ref ctxt t, go_ref ctxt u) of
             (SOME t', SOME u') => SOME (t' $ u')
           | (SOME t', NONE) => SOME (t' $ u)
