@@ -364,8 +364,17 @@ fun dest (Leaf xs) = map (pair []) xs
       map (cons_fst VarK) (dest var) @
       maps (fn (a, net) => map (cons_fst (AtomK a)) (dest net)) (Symtab.dest atoms);
 
+(*`fold_rev', not `fold': `dest' emits each leaf in retrieval order and `insert'
+  head-conses, so a plain `fold' would rebuild every net2 leaf REVERSED -- after a
+  theory merge the EARLIER of two same-key rules declared in one theory would win
+  the first match, silently rolling back the override semantics documented at
+  `gen_insert' (measured 2026-08-08; Pure's net.ML still carries the plain fold
+  with its "FIXME non-canonical merge order!?!").  Folding from the right
+  re-inserts each leaf's run oldest-first, so net2's retrieval order survives.
+  Relative order BETWEEN net1 items and net2 items stays merge-direction
+  dependent -- only same-side order is preserved.*)
 fun merge eq (net1, net2) =
-  fold (insert_safe eq) (dest net2) net1;  (* FIXME non-canonical merge order!?! *)
+  fold_rev (insert_safe eq) (dest net2) net1;
 
 fun content net = map #2 (dest net);
 

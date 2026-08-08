@@ -24,11 +24,14 @@
    shows up as duplicate entries when same-prop rules differ in hyps/shyps.
 
    SAME KEY: THE LATER ADDITION COMES FIRST, so a consumer taking the first
-   match sees the later declaration win.  This is iNet's documented lookup
-   order ("Lookup functions preserve order in items stored at same level",
-   improved_net.ML) and holds within a single theory; the relative order of
-   same-key items merged from different theories depends on the import
-   direction.  `content' order carries no guarantee at all.
+   match sees the later declaration win.  The leaf row decides this ("`insert'
+   head-conses, so among items with the same key the LAST inserted is retrieved
+   FIRST", improved_net.ML), and `iNet.merge' preserves each side's leaf order,
+   so a pair added in one theory keeps its relative order in every descendant;
+   only same-key items arriving from DIFFERENT parents of a theory merge carry
+   no relative-order guarantee (they follow the parent order).  An
+   `eq'-duplicate add is a silent no-op: it neither replaces the stored entry
+   nor promotes it.  `content' order carries no guarantee at all.
 
    There is no counterpart of `Item_Net.member': no consumer needs it today.
 

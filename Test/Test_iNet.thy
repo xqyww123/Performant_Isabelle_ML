@@ -264,4 +264,43 @@ val _ =
 end
 \<close>
 
+(* Test 12: merge -- each side's same-key order survives, duplicates are dropped.
+   `merge' folds net2 into net1 with `fold_rev' over `dest'; a plain `fold' here
+   reverses every net2 leaf, which for consumers relying on last-inserted-first
+   override semantics silently makes the EARLIER rule win after a theory merge
+   (measured 2026-08-08; this test pins the fix). *)
+ML \<open>
+local
+  val T = dummyT;
+  val eq = (fn ((_, a), (_, b)) => a = b) : (term * string) * (term * string) -> bool;
+  val key = Const ("k", T) $ Var (("x", 0), T);
+  val other = Const ("k2", T) $ Var (("x", 0), T);
+  fun ins k s net = iNet.insert_term eq (k, (k, s)) net;
+  fun names net = map #2 (iNet.match_term net (Const ("k", T) $ Const ("c", T)));
+  fun assert_order msg expected actual =
+    if expected = actual then ()
+    else error ("FAIL: " ^ msg ^
+                "\n  expected: " ^ ML_Syntax.print_list ML_Syntax.print_string expected ^
+                "\n  actual:   " ^ ML_Syntax.print_list ML_Syntax.print_string actual);
+in
+val _ =
+  let
+    val net2 = iNet.empty |> ins key "a" |> ins key "b" |> ins key "c";  (*retrieval [c,b,a]*)
+    val net1 = iNet.empty |> ins other "u";
+    val _ = assert_order "merge keeps net2 same-key order (empty base)"
+              ["c", "b", "a"] (names (iNet.merge eq (iNet.empty, net2)));
+    val _ = assert_order "merge keeps net2 same-key order (non-empty base)"
+              ["c", "b", "a"] (names (iNet.merge eq (net1, net2)));
+    val _ = assert_order "merge keeps net1 same-key order (net1 is the fold base)"
+              ["c", "b", "a"] (names (iNet.merge eq (net2, net1)));
+    (*duplicates arriving from net2 are dropped without disturbing either order;
+      net2's genuinely new items land IN FRONT of the base's -- that cross-side
+      placement is measured behaviour, not contract (merge-direction dependent)*)
+    val net3 = iNet.empty |> ins key "b" |> ins key "d";  (*retrieval [d,b]; "b" duplicates net2's*)
+    val _ = assert_order "merge drops eq-duplicates, keeps both orders"
+              ["d", "c", "b", "a"] (names (iNet.merge eq (net2, net3)));
+  in writeln "Test 12 (merge order): pass" end;
+end
+\<close>
+
 end

@@ -32,7 +32,7 @@ fun check msg b = if b then () else error ("FAIL: " ^ msg);
 ML \<open>
 structure P = iNet_Collection(
   type T = term * string
-  val eq = fn ((t, _): term * string, (u, _): term * string) => t aconv u
+  val eq = fn ((t, a): term * string, (u, b): term * string) => t aconv u andalso a = b
   val key_of = fst);
 
 local
@@ -64,7 +64,28 @@ setup \<open>Rules.setup #> FooFull.setup\<close>
 
 declare r_gg [probe_rules]
 
-thm probe_rules  \<comment> \<open>dynamic fact name resolves\<close>
+thm probe_rules  \<comment> \<open>display only; the ML check below is the gate -- a failing
+                       `thm' does not suppress the summary line\<close>
+
+ML \<open>
+val _ = check "dynamic fact name resolves"
+          (can (Proof_Context.get_thms @{context}) "probe_rules");
+\<close>
+
+(* ==== attribute-level del round trip: the `[probe_rules del]' syntax itself;
+   ML-level del_thm is covered in P4/P5.  Net effect on the theory is zero, so
+   the sections below still see exactly the r_gg seed. ==== *)
+declare r_hh [probe_rules]
+
+ML \<open>
+val _ = check "attribute-level add arrived (count 2)" (length (Rules.get @{context}) = 2);
+\<close>
+
+declare r_hh [probe_rules del]
+
+ML \<open>
+val _ = check "attribute-level del arrived (count back to 1)" (length (Rules.get @{context}) = 1);
+\<close>
 
 ML \<open>
 local
@@ -161,8 +182,10 @@ val _ = check "P5/B4 del-path payload has the instance-name prefix"
 end
 \<close>
 
-(* ==== P6: same key, later addition first; re-add does not promote (B5;
-   single-theory scope on purpose -- cross-theory order follows imports) ==== *)
+(* ==== P6: same key, later addition first; re-add does not promote (B5).
+   Single theory here; `iNet.merge' preserves each side's leaf order (library
+   header), so this order also survives theory merges -- the engine-level
+   merge-order assertions live in Test_iNet.thy. ==== *)
 ML \<open>
 local
   val gctx0 = Context.Theory @{theory};
