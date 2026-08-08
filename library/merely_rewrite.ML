@@ -131,14 +131,24 @@ sig
      is the canonical one.  Pass its output.  Anything else is rejected by
      `dest_rule'.
 
-     Among rules with the same net key, the LAST one added fires first --
-     override semantics: a later, better rule takes effect without deleting the
-     old one.  This is the OPPOSITE of Raw_Simplifier, where `sort_rrules'
-     makes the first-registered rule win.
+     ORDER AMONG RULES WITH THE SAME NET KEY: the whole semantics is a LIST
+     PREPEND.  `add_rule' conses onto the front of that key's list, and lookup
+     reads it from the front, so the LAST one added fires first -- override
+     semantics: a later, better rule takes effect without deleting the old one.
+     This is the OPPOSITE of Raw_Simplifier, where `sort_rrules' makes the
+     first-registered rule win.
 
-     `make_rules (dest_rules net)' REVERSES the relative order of same-key
-     rules (both walks are head-first over leaf lists).  Do not snapshot and
-     rebuild a rule set whose same-key order matters. *)
+     `make_rules' builds the same list directly, so its argument IS that list,
+     front first: `make_rules [a, b, c]' tries a, then b, then c.  (It therefore
+     inserts back to front, which is the only way both readings can hold at
+     once.)  `dest_rules' hands the list back in the same order, so
+
+         make_rules (dest_rules net) = net
+
+     for every net -- snapshotting and rebuilding a rule set is safe, and
+     `Skel_Boundary' pins it.  It was not always: `make_rules' used to fold
+     front-to-back, which quietly reversed every same-key group on the way
+     round. *)
   val empty_rules: rules
   val add_rule: thm -> rules -> rules
   val del_rule: thm -> rules -> rules
@@ -368,7 +378,9 @@ val empty_rules = iNet.empty;
   the note at the top of the file for what that costs.*)
 fun add_rule th = iNet.insert_term_safe eq_rule (#1 (dest_rule th), th);
 fun del_rule th = iNet.delete_term_safe eq_rule (#1 (dest_rule th), th);
-fun make_rules ths = fold add_rule ths empty_rules;
+(*`fold_rev', not `fold': `add_rule' prepends, so building the list front first
+  means inserting back to front.  See the order note in the signature.*)
+fun make_rules ths = fold_rev add_rule ths empty_rules;
 val dest_rules = iNet.content;
 val merge_rules = iNet.merge eq_rule;
 

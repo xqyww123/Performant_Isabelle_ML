@@ -194,6 +194,30 @@ end;
 \<close>
 
 ML \<open>
+(*B6: the rule-set order contract -- a rule set is a LIST PREPEND, and the list
+  `make_rules' is given is that list front first.  Three rules on ONE key, so
+  their relative order is the whole content of the test.
+
+  This used to be wrong in a way nothing noticed: `make_rules' folded front to
+  back while `add_rule' prepends, so a snapshot-and-rebuild silently reversed
+  every same-key group and the rewrite that had been winning started losing.*)
+let
+  val same_key = map (rule (ff $ aa)) [aa, bb, cc];   (*ff aa == aa | bb | cc*)
+  val net = Merely_Rewrite.make_rules same_key;
+  fun rhss ths = map (show o #2 o Logic.dest_equals o Thm.prop_of) ths;
+  val out = Merely_Rewrite.dest_rules net;
+  val round = Merely_Rewrite.dest_rules (Merely_Rewrite.make_rules out);
+  val fired = show (Merely_Rewrite.rewrite_term net ctxt0 (ff $ aa));
+in
+  if rhss out <> rhss same_key then
+    error ("B6: dest_rules is not the list make_rules was given: " ^ commas (rhss out))
+  else if rhss round <> rhss same_key then
+    error ("B6: make_rules o dest_rules is not the identity: " ^ commas (rhss round))
+  else if fired <> show aa then
+    error ("B6: the FRONT of the list must fire, got " ^ fired)
+  else writeln "B6 rule-set order: list prepend, round trip is the identity"
+end;
+
 (*DC8 (MERELY_REWRITE_EAGER_BETA_PLAN.md section 8.4b): the default step limit is a
   decision, not an accident.  The value is not exported, so pin the source text.*)
 let
