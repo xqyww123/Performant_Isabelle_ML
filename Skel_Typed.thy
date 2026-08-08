@@ -155,34 +155,50 @@ val t6 = \<^term>\<open>g0\<close> $ (\<^term>\<open>f0\<close> $ \<^term>\<open
 val e6_lifted = qhC $ Abs ("w", natT, \<^term>\<open>g0\<close> $ (\<^term>\<open>f0\<close> $ Bound 1) $ Bound 0);
 val _ = check_loose "T6(capture shape, now lifted)" [r6] [("x", natT)] t6 e6_lifted;
 
-(*T7: the position where the traversal's OWN bvs bookkeeping is actually
-  consumed -- found by mutant M2 slipping through T1-T6.  The matcher tracks
-  binders inside the matched region itself; the traversal's pushed entries are
-  consulted only when the FIRST-ORDER FALLBACK types a contextual Bound in a
-  binding.  A traversal that fails to push (M2) makes that type lookup raise
-  on an empty table instead of firing the rewrite.*)
+(*T7: the traversal's OWN binder bookkeeping, judged by a HAND-COMPUTED
+  EXPECTATION.  The matcher tracks the binders inside the matched region itself;
+  the traversal's pushed entries are consulted only where the FIRST-ORDER
+  FALLBACK has to type a contextual `Bound' that appears in a binding.  Hand the
+  entry a non-empty `bvs' of a DIFFERENT type and a traversal that forgets to
+  push does not crash: it finds an entry for `Bound 0' all right, reads bool
+  where nat is meant, the match fails, and the rewrite goes MISSING IN SILENCE --
+  which is the shape this defect really has in production.
+
+  Deliberately BEFORE T8.  T8 catches the same defect with a bare exception, and
+  an exception aborts the whole theory, so the sample that judges the OUTPUT has
+  to get its turn first; otherwise the mutation gate records "caught" for a
+  detector that never compared anything.*)
 val r7 = rule (\<^term>\<open>g0\<close> $ (V "P" (natT --> natT) $ \<^term>\<open>n0\<close>) $ V "y" natT)
               (\<^term>\<open>g1\<close> $ V "y" natT $ V "y" natT);
 val _ =
-  check "T7" [r7]
+  check_loose "T7(missing push, judged by expectation)" [r7] [("zb", boolT)]
     (qhC $ Abs ("u", natT, \<^term>\<open>g0\<close> $ (\<^term>\<open>f0\<close> $ \<^term>\<open>n0\<close>) $ Bound 0))
     (qhC $ Abs ("u", natT, \<^term>\<open>g1\<close> $ Bound 0 $ Bound 0));
 
-(*T8: the PUSH-DIRECTION detector (mutant M3) -- found by M3 slipping through
-  T1-T7.  Reversal is a no-op under one binder (T7) and invisible to the
-  higher-order path (T2), so it takes TWO binders of DIFFERENT types plus the
+(*T8: the same position entered with an EMPTY `bvs'.  There a missing push, and
+  equally a matcher handed an empty table, can only fail loudly -- `fastype_of'
+  on a bare `Bound' with nothing to look it up in.  Kept for the `bvs = []' entry
+  path; it is evidence that the failure is loud, NOT evidence about the output.*)
+val _ =
+  check "T8" [r7]
+    (qhC $ Abs ("u", natT, \<^term>\<open>g0\<close> $ (\<^term>\<open>f0\<close> $ \<^term>\<open>n0\<close>) $ Bound 0))
+    (qhC $ Abs ("u", natT, \<^term>\<open>g1\<close> $ Bound 0 $ Bound 0));
+
+(*T9: the PUSH-DIRECTION detector (mutant M3) -- found by M3 slipping through
+  everything above.  Reversal is a no-op under a single binder and invisible to
+  the higher-order path (T2), so it takes TWO binders of DIFFERENT types plus the
   first-order fallback: with the correct innermost-first bvs the fallback types
   `Bound 0' as the inner nat binder and fires; with the order reversed it reads
   the outer bool binder's type, the match fails, and the rewrite is silently
   lost.*)
 val _ =
-  check "T8" [r7]
+  check "T9" [r7]
     (qbC $ Abs ("b", boolT, qhC $ Abs ("u", natT,
        \<^term>\<open>g0\<close> $ (\<^term>\<open>f0\<close> $ \<^term>\<open>n0\<close>) $ Bound 0)))
     (qbC $ Abs ("b", boolT, qhC $ Abs ("u", natT,
        \<^term>\<open>g1\<close> $ Bound 0 $ Bound 0)));
 
-(*T9: the GUARD-(c) detector (mutant M5) -- found by M5 surviving the fuzz:
+(*T10: the GUARD-(c) detector (mutant M5) -- found by M5 surviving the fuzz:
   guard (c) bites when the matcher ETA-EXPANDS the object (`mkabs' synthesises
   the hole material), and the generator only ever builds literal Abs under the
   binder heads, so the eta-contracted shape `qh f1' never occurs randomly.
@@ -195,9 +211,34 @@ val PV9 = V "P" (natT --> natT);
 val r9a = rule (qhC $ Abs ("u", natT, PV9 $ Bound 0)) (\<^term>\<open>rr\<close> $ PV9);
 val r9b = rule (V "F" (natT --> natT)) \<^term>\<open>f0\<close>;
 val _ =
-  check "T9" [r9a, r9b]
+  check "T10" [r9a, r9b]
     (qhC $ \<^term>\<open>f1\<close>)
     (\<^term>\<open>rr\<close> $ \<^term>\<open>f0\<close>);
+
+(*T11: the entry assertion itself -- the one runtime check the signature contract
+  promises, and until now the only part of this change with no test at all.  A
+  `bvs' one entry too short must fail EARLY and name what is missing; if the
+  bound in the assertion were ever written the wrong way round, or the assertion
+  dropped in a refactor, nothing else in the corpus would notice.*)
+val _ =
+  let
+    val t = \<^term>\<open>g0\<close> $ Bound 0 $ Bound 1;   (*needs two entries*)
+    val short = [("only_one", natT)];
+    val net = Merely_Rewrite.make_rules [r1];
+  in
+    (case Exn.capture (fn () => Merely_Rewrite.rewrite_term_bvs net ctxt0 short t) () of
+      Exn.Exn (Fail msg) =>
+        if String.isSubstring "B.1" msg andalso String.isSubstring "1 entries" msg
+        then writeln "T11(entry assertion): ok"
+        else error ("T11: wrong message: " ^ msg)
+    | Exn.Exn e => error ("T11: wrong exception: " ^ Runtime.exn_message e)
+    | Exn.Res u => error ("T11: no failure, got " ^ dump u));
+    (*and the boundary case just inside the contract must NOT fail*)
+    (case Exn.capture (fn () =>
+            Merely_Rewrite.rewrite_term_bvs net ctxt0 [("a", natT), ("b", natT)] t) () of
+      Exn.Res _ => writeln "T11(boundary, exactly enough): ok"
+    | Exn.Exn e => error ("T11 boundary: " ^ Runtime.exn_message e))
+  end;
 \<close>
 
 end

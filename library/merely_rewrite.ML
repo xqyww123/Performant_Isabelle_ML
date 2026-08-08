@@ -55,9 +55,9 @@
 
    TWO LAYERS.  `Thm.cterm_of' REJECTS a term containing a loose `Bound' ("Loose
    bound variable: B.n", sign.ML), so the conv layer cannot be handed one.  The term
-   layer (`rewrite_term') exists for callers that must rewrite exactly such terms;
-   `Object_Logic.atomize_term' is the standard example.  It produces NO PROOF, which
-   is what it gives up and also why it is much the faster of the two.
+   layer (`rewrite_term_bvs') exists for callers that must rewrite exactly such
+   terms; `Object_Logic.atomize_term' is the standard example.  It produces NO
+   PROOF, which is what it gives up and also why it is much the faster of the two.
 
    SKELETON PRUNING.  Re-traversing the whole result of every hit is O(size^2) worst
    case.  A skeleton runs alongside the term and records where material came from:
@@ -173,7 +173,10 @@ sig
      `single_step_rewrite_term' is `single_step_rewrite_conv' with `get_first' in
      place of `Conv.first_conv', over the same net and the same candidates.
      `bvs' types the loose `Bound's of the node; see the loose-bound contract at
-     the term entry points below. *)
+     the term entry points below.  NO ENTRY ASSERTION HERE, unlike the traversals:
+     one node is not worth a rescan of the term, so a `bvs' too short for this
+     node surfaces as whatever the matcher raises on the `Bound' it cannot type,
+     not as the contract's own message. *)
   val single_step_rewrite_term:
     (Proof.context -> 'a -> bvs -> term -> term option) -> 'a iNet.net ->
     Proof.context -> bvs -> term -> term option
@@ -880,9 +883,12 @@ fun bottom_fixpoint_gen_term mode opts (step: Proof.context -> skel_term) ctxt0 
 
     (*THE ENTRY ASSERTION -- the single check the loose-bound contract in the
       signature promises: every loose `Bound' of the input has a `bvs' entry.
-      Every mode and skeleton variant passes through this function, so every
-      public term entry is covered.  `Fail', not TERM/TYPE: nothing downstream
-      may read it as "no rewrite here".*)
+      Every TRAVERSAL passes through here whichever mode and skeleton variant it
+      runs, so `rewrite_term', `rewrite_term_bvs' and the whole
+      `bottom_fixpoint_*' family are covered.  The SINGLE-STEP entries are not:
+      they are one node with no traversal, and checking there would rescan the
+      term at every node.  `Fail', not TERM/TYPE: nothing downstream may read it
+      as "no rewrite here".*)
     val _ =
       (case filter (fn i => i >= length bvs0) (Term.loose_bnos t0) of
         [] => ()

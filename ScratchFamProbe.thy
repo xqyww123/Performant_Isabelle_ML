@@ -67,7 +67,7 @@ fun fires fam n =
             val input = gen_term (4 + rand 3) [];
             val fired =
               (case Exn.capture (fn () =>
-                  Merely_Rewrite.rewrite_term_mode Merely_Rewrite.Skeleton opts net ctxt0 input) () of
+                  Merely_Rewrite.rewrite_term_mode Merely_Rewrite.Skeleton opts net ctxt0 [] input) () of
                  Exn.Res out => not (out aconv input)
                | Exn.Exn _ => true);
           in (#1 a + (if fired then 1 else 0), #2 a + 1) end

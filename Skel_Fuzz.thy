@@ -230,11 +230,16 @@ fun outcome res =
   | Exn.Exn (Merely_Rewrite.DIVERGES (Merely_Rewrite.Growth _, _)) => "DIVERGES Growth"
   | Exn.Exn e => "EXN " ^ Runtime.exn_message e);
 
-(*O1, the beta-normal-fixpoint invariant: an output the module reports as OK must
-  contain no beta redex, and no rule of the net may still fire anywhere in it
-  (binders opened as fresh frees).  The only oracle that catches a defect made
-  identically in both layers, and the only one usable on loose-Bound terms -- but
-  it is dead unless the corpus contains `gen_rule_beta' rules.
+(*O1, the invariant oracle: an output the module reports as OK must be WELL-TYPED
+  relative to `bvs', must contain no beta redex, and no rule of the net may still
+  fire anywhere in it.  The only oracle that catches a defect made identically in
+  both layers, and the only one usable on loose-Bound terms -- but the redex and
+  fire halves are dead unless the corpus contains `gen_rule_beta' rules.
+
+  `Term.type_of1' and not `fastype_of1': the cheap one only takes the range type
+  of an application and never looks at the argument, so it cannot see a capture
+  that put the wrong type in an argument position -- which is the failure this
+  oracle exists to catch.  It is not on any hot path.
 
   The opener is a plain `subst_bound', which shifts the OTHER loose Bounds down by
   one -- sound for THIS corpus only because no generated rule contains a loose
@@ -258,7 +263,10 @@ fun o1_violation net bvs0 t0 =
          u $ v => still_fires bvs u orelse still_fires bvs v
        | Abs (a, T, b) => still_fires ((a, T) :: bvs) b
        | _ => false);
-  in has_redex t0 orelse still_fires bvs0 t0 end;
+    val ill_typed =
+      (Term.type_of1 (map snd bvs0, t0); false)
+        handle TYPE _ => true | TERM _ => true;
+  in ill_typed orelse has_redex t0 orelse still_fires bvs0 t0 end;
 
 fun counted mk =
   let
@@ -388,11 +396,162 @@ fun loosen nat_pos t =
   | Abs (a, T, b) => Abs (a, T, loosen true b)
   | _ => if nat_pos andalso rand 5 = 0 then Bound (rand 6) else t);
 
+(*O-C, the CLOSE-AND-REOPEN oracle: the only check here that shares no code with
+  what it tests.  Replace every loose `Bound k' of the input by a free variable,
+  hand THAT to the conv layer -- kernel matcher, kernel substitution,
+  `Thm.cterm_of' willing to take it now -- turn the frees back into `Bound's, and
+  compare with the term layer's answer.  O1 and the three-mode differential both
+  run the term layer's own matcher and substituter, so a coordinate defect inside
+  those is invisible to them and visible here.
+
+  FREES, NOT A BINDER WRAPPER.  The obvious closing move is to wrap the input in
+  n abstractions and strip them off afterwards.  It does not work, and the reason
+  is worth recording because the failure is silent: the wrapper introduces nodes
+  -- `%z0. input' and its outer siblings -- that DO NOT EXIST in the term the
+  term layer was given, and any function-typed left-hand side can match one of
+  them, through `Pattern.match's eta expansion if not directly.  Then the conv
+  side rewrites something its counterpart never saw and the oracle reports a
+  disagreement on a correct engine.  Measured false positives:
+  `[(%x. x) == (%x. f0 x)]' on input `Bound 0', and
+  `[(%x. g0 x x) == (%x. f0 x)]' on `g0 (Bound 0) (Bound 0)'.  Guarding it by
+  type was sound but abstained on 86% of rounds; guarding it by "the wrapper must
+  come back unchanged" does not work at all, since `aconv' ignores binder names
+  and `Thm.rename_boundvars' copies the redex's names onto the rule's output
+  anyway.  Frees make the whole class disappear: no node is added, so there is
+  nothing extra to match.  This is also exactly the reading of a contextual bound
+  that the term layer itself uses -- `fixed_bounds = K true', "treat it as an
+  ordinary free variable" -- so the two sides are being asked the same question.
+
+  Abstains only where the two layers are DOCUMENTED to be allowed to differ, and
+  every abstention is counted by reason.  Agreements are split by whether the
+  round rewrote anything and by whether the round was strict enough to have gone
+  red -- an oracle that abstains everywhere, or only ever agrees where nothing
+  happened, would otherwise look exactly like one that works.*)
+fun oc_free_name k a = "__oc_" ^ string_of_int k ^ "_" ^ a;
+
+fun close_frees bvs t =
+  let
+    val subst = map_index (fn (k, (a, T)) => (k, Free (oc_free_name k a, T))) bvs;
+    fun walk d (Bound i) =
+          if i < d then Bound i
+          else (case AList.lookup (op =) subst (i - d) of SOME v => v | NONE => Bound i)
+      | walk d (Abs (a, T, b)) = Abs (a, T, walk (d + 1) b)
+      | walk d (u $ v) = walk d u $ walk d v
+      | walk _ u = u;
+  in walk 0 t end;
+
+(*the inverse: a free standing for `Bound k', found under d binders, is `Bound
+  (k + d)'.  Getting this arithmetic wrong is the one way this oracle can lie, so
+  it is the mirror image of `close_frees' and nothing else.*)
+fun reopen_frees bvs t =
+  let
+    val back = map_index (fn (k, (a, _)) => (oc_free_name k a, k)) bvs;
+    fun walk d (Free (x, T)) =
+          (case AList.lookup (op =) back x of SOME k => Bound (k + d) | NONE => Free (x, T))
+      | walk d (Abs (a, T, b)) = Abs (a, T, walk (d + 1) b)
+      | walk d (u $ v) = walk d u $ walk d v
+      | walk _ u = u;
+  in walk 0 t end;
+
+(*strict class: the only class on which the two layers are required to agree
+  literally.  Every schematic occurrence sits at binder depth 0 in the left-hand
+  side, no rule carries a schematic -- of either kind -- that the left does not
+  bind, and the input is ground.  TYPE variables count: `Conv.rewr_conv' renames
+  them apart with `Logic.incr_tvar' at every application and the term layer
+  deliberately does not (merely_rewrite.ML records it as a known cross-layer
+  difference), so an extra `TVar' is as much a licence to differ as an extra
+  `Var'.  Nothing in the all-nat corpus reaches this yet; the dual-base-type
+  corpus the plan calls for would.*)
+fun all_vars_at_depth0 lhs =
+  let
+    fun ok d (Var _) = d = 0
+      | ok d (t $ u) = ok d t andalso ok d u
+      | ok d (Abs (_, _, b)) = ok (d + 1) b
+      | ok _ _ = true;
+  in ok 0 lhs end;
+
+fun has_extra_var (lhs, rhs) =
+  let
+    val bound = Term.add_vars lhs [];
+    val boundT = Term.add_tvars lhs [];
+  in
+    Term.exists_subterm (fn Var v => not (member (op =) bound v) | _ => false) rhs
+    orelse exists (fn v => not (member (op =) boundT v)) (Term.add_tvars rhs [])
+  end;
+
+fun strict_class rules input =
+  forall (fn th =>
+      let val (l, r) = Logic.dest_equals (Thm.prop_of th)
+      in all_vars_at_depth0 l andalso not (has_extra_var (l, r)) end)
+    rules
+  andalso not (Term.exists_subterm Term.is_Var input);
+
+datatype oc = OC_Agree | OC_Differ of term * term | OC_Abstain of string;
+
+(*The verdict.  Only two things can stop a round being decided: the conv layer
+  raising (a divergence guard, almost always), and the rule set being outside the
+  strict class, where the two layers are allowed to differ.*)
+fun close_and_reopen rules net bvs input term_result =
+  let
+    val closed = close_frees bvs input;
+  in
+    (case Exn.capture (fn () =>
+            Thm.term_of (Thm.rhs_of
+              (Merely_Rewrite.rewrite_conv_options opts net ctxt0
+                (Thm.cterm_of ctxt0 closed)))) () of
+      Exn.Exn _ => OC_Abstain "conv-raised"
+    | Exn.Res closed_out =>
+        let val reopened = reopen_frees bvs closed_out in
+          if reopened aconv term_result then OC_Agree
+          else if strict_class rules input then OC_Differ (reopened, term_result)
+          else OC_Abstain "loose-class"
+        end)
+  end;
+
+(*POSITIVE CONTROLS, both of them rule sets that made the earlier binder-wrapper
+  version of this oracle report a disagreement on a correct engine.  With frees
+  there is no extra node to match, so both must now AGREE.  If either ever starts
+  disagreeing, the closing move has drifted back towards adding nodes.*)
+val oc_controls =
+  let
+    val bvs1 = [("z", natT)];
+    fun control label rules input =
+      let
+        val net = Merely_Rewrite.make_rules rules;
+        val term_result = Merely_Rewrite.rewrite_term_bvs net ctxt0 bvs1 input;
+      in
+        (case close_and_reopen rules net bvs1 input term_result of
+          OC_Agree => writeln ("O-C control " ^ label ^ ": agrees")
+        | OC_Abstain why => error ("O-C control " ^ label ^ " abstained (" ^ why ^ ")")
+        | OC_Differ (a, b) =>
+            error ("O-C control " ^ label ^ ": FALSE RED -- the closing move adds nodes again.\
+                   \\n  conv side " ^ dump a ^ "\n  term side " ^ dump b))
+      end;
+    val idC = mk_thm (Logic.mk_equals (Abs ("x", natT, Bound 0),
+                                       Abs ("x", natT, \<^term>\<open>f0\<close> $ Bound 0)));
+    val dupC = mk_thm (Logic.mk_equals
+      (Abs ("x", natT, \<^term>\<open>g0\<close> $ Bound 0 $ Bound 0),
+       Abs ("x", natT, \<^term>\<open>f0\<close> $ Bound 0)));
+  in
+    control "identity-Abs lhs" [idC] (Bound 0);
+    control "duplicating-Abs lhs" [dupC] (\<^term>\<open>g0\<close> $ Bound 0 $ Bound 0)
+  end;
+
 fun fuzz_loose start n =
   let
     val bad = Unsynchronized.ref ([]: string list);
     val o1bad = Unsynchronized.ref ([]: string list);
+    val ocbad = Unsynchronized.ref ([]: string list);
     val stats = Unsynchronized.ref (0, 0);
+    val oc_agree = Unsynchronized.ref 0;
+    (*an agreement on a round where nothing was rewritten proves very little, so
+      the two are counted apart*)
+    val oc_agree_rewrote = Unsynchronized.ref 0;
+    (*rounds that reached the comparison AND were strict, i.e. the ones where a
+      disagreement would actually have been reported.  Without this the "decided"
+      count reads as if every one of them could have gone red.*)
+    val oc_red_possible = Unsynchronized.ref 0;
+    val oc_abstain = Unsynchronized.ref (Symtab.empty: int Symtab.table);
     fun step i =
       let
         val _ = srand (start + i);
@@ -417,6 +576,23 @@ fun fuzz_loose start n =
           (case rc of
              Exn.Res t => if o1_violation net bvs6 t then o1bad := record () :: ! o1bad else ()
            | _ => ());
+        (*O-C runs only where the term layer produced a term at all*)
+        val _ =
+          (case rc of
+             Exn.Res t =>
+               (case close_and_reopen rules net bvs6 input t of
+                 OC_Agree =>
+                   (oc_agree := ! oc_agree + 1;
+                    if t aconv input then () else oc_agree_rewrote := ! oc_agree_rewrote + 1;
+                    if strict_class rules input
+                    then oc_red_possible := ! oc_red_possible + 1 else ())
+               | OC_Abstain why =>
+                   oc_abstain := Symtab.map_default (why, 0) (fn k => k + 1) (! oc_abstain)
+               | OC_Differ (peeled, got) =>
+                   ocbad :=
+                     cat_lines [record (), "O-C conv side  " ^ dump peeled,
+                                "O-C term layer " ^ dump got] :: ! ocbad)
+           | _ => ());
       in
         if a = b andalso b = c then () else bad := record () :: ! bad
       end;
@@ -426,10 +602,16 @@ fun fuzz_loose start n =
     writeln ("fuzz_loose: " ^ string_of_int n ^ " rounds from seed " ^ string_of_int start ^
       "\n  rounds in which the output differs from the input: " ^ string_of_int p ^
       "\n  rounds that raised something: " ^ string_of_int q ^
-      "\n  O1 beta-normal-fixpoint violations: " ^ string_of_int (length (! o1bad)) ^
+      "\n  O1 invariant violations: " ^ string_of_int (length (! o1bad)) ^
+      "\n  O-C close-and-reopen: " ^ string_of_int (! oc_agree) ^ " agree (" ^
+        string_of_int (! oc_agree_rewrote) ^ " of them on rounds that rewrote, " ^
+        string_of_int (! oc_red_possible) ^ " strict enough to have gone red), " ^
+        commas (map (fn (k, v) => string_of_int v ^ " abstain/" ^ k)
+                    (Symtab.dest (! oc_abstain))) ^
+      "\n  O-C DISAGREEMENTS: " ^ string_of_int (length (! ocbad)) ^
       "\n  MISMATCHES: " ^ string_of_int (length (! bad)));
-    if null (! bad) andalso null (! o1bad) then ()
-    else error (cat_lines (take 3 (! bad) @ take 3 (! o1bad)))
+    if null (! bad) andalso null (! o1bad) andalso null (! ocbad) then ()
+    else error (cat_lines (take 3 (! bad) @ take 3 (! o1bad) @ take 3 (! ocbad)))
   end;
 \<close>
 
