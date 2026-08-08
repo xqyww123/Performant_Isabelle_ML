@@ -140,11 +140,19 @@ val _ =
       (match_term net (Abs("x", T, Bound 0)))
   in writeln "Test 9 (lambda vs non-lambda): pass" end;
 
-(* Test 10: Application inside lambda body *)
+(* Test 10: Application inside lambda body.
+   The expected key is [AtomK "f"]: `key_of_term' normalizes its input, and
+   `%x. f x' eta-contracts to `f'.  This is the key `insert_term' has ALWAYS
+   stored for this term (it normalized before keying since day one) -- the old
+   expectation [CombK, AtomK "\<lambda>", CombK, AtomK "f", AtomK ":000"] pinned an
+   encoding that never occurred in any net, observable only through the bare
+   `key_of_term'.  If this assertion goes red, fix the expectation, do not make
+   `key_of_term' stop normalizing: that reopens the `(%x. f x) $ a' key-drops-
+   the-argument gap (improved_net.ML, PRECONDITION comment). *)
 val _ =
   let
     val _ = assert_eq_keys "app in body"
-      [CombK, AtomK "\<lambda>", CombK, AtomK "f", AtomK (Name.bound 0)]
+      [AtomK "f"]
       (key_of_term (Abs("x", T, Const("f", T) $ Bound 0)))
     val net = empty
       |> ins (Abs("x", T, Const("f", T) $ Bound 0), "f_app")

@@ -58,7 +58,15 @@ end
 signature INET =
 sig
   datatype key = CombK | VarK | AtomK of string
+  (*beta-eta normalizes its input itself: the bare key agrees with what
+    `insert_term' stores, so `lookup net (key_of_term t)' round-trips*)
   val key_of_term: term -> key list
+  (*beta-eta normalize if needed: one guard scan, identity on normal terms*)
+  val norm: term -> term
+  (*normalizes the OUTERMOST shape only -- proper subterms come back untouched
+    (`%x. k (%z. ?V z) x' loses its binder, but the inner eta redex stays).
+    NOT a normalizer; for the normal form use `Envir.beta_eta_contract'.*)
+  val nf_view: term -> term
   val encode_type: typ -> term
   type 'a net
   val empty: 'a net
@@ -108,8 +116,12 @@ fun encode_type (Type (c, Ts)) = Term.list_comb (Const (c, dummyT), map encode_t
 
   PRECONDITION: the term is beta-normal.  The front-rigid branch argues that a
   substitution cannot erase `x' from a front holding no schematic, which is false on
-  a beta redex.  The entry points that build keys (`insert_term', `insert_term_last',
-  `delete_term') run `norm' first; the exported `key_of_term' and `insert' do not.
+  a beta redex.  `key_of_term' normalizes its own input, which discharges the
+  precondition for every key-building entry point (`insert_term',
+  `insert_term_last', `delete_term') AND for the bare `key_of_term'+`lookup'
+  round-trip -- before it did, `(%x. f x) $ a' keyed as if the argument were not
+  there (the Abs branch dispatches on `head_of' and encodes only the abstraction).
+  Only the raw-key `insert'/`delete'/`lookup' bypass normalization.
   (`match_term' and `unify_term' build no keys -- they normalize along the descent,
   see `nf_view'.)
 
@@ -169,12 +181,12 @@ fun add_key_of_terms (Ts, t, cs) =
     | _     => rands(t,cs)
   end;
 
-(*convert a term to a list of keys*)
-fun key_of_term t = add_key_of_terms ([], t, []);
-
 (*beta-eta normalize if needed*)
 fun norm t =
   if Term.could_beta_contract t orelse Term.could_eta_contract t then Envir.beta_eta_contract t else t;
+
+(*convert a term to a list of keys; normalizes first (see PRECONDITION above)*)
+fun key_of_term t = add_key_of_terms ([], norm t, []);
 
 (*Trees indexed by key lists: each arc is labelled by a key.
   Each node contains a list of items, and arcs to children.
@@ -220,13 +232,13 @@ fun gen_insert leaf_add eq (keys,x) net =
 
 fun insert eq = gen_insert (fn (xs, x) => x :: xs) eq;
 
-fun insert_term eq (t, x) = insert eq (key_of_term (norm t), x);
+fun insert_term eq (t, x) = insert eq (key_of_term t, x);
 
 fun insert_safe eq entry net = insert eq entry net handle INSERT => net;
 fun insert_term_safe eq entry net = insert_term eq entry net handle INSERT => net;
 
 fun insert_term_last eq (t, x) =
-  gen_insert (fn (xs, x) => xs @ [x]) eq (key_of_term (norm t), x);
+  gen_insert (fn (xs, x) => xs @ [x]) eq (key_of_term t, x);
 fun insert_term_last_safe eq entry net = insert_term_last eq entry net handle INSERT => net;
 
 
@@ -262,7 +274,7 @@ fun delete eq (keys, x) net =
             in  newnet{comb=comb, var=var, atoms=atoms'}  end
   in  del1 (keys,net)  end;
 
-fun delete_term eq (t, x) = delete eq (key_of_term (norm t), x);
+fun delete_term eq (t, x) = delete eq (key_of_term t, x);
 
 fun delete_safe eq entry net = delete eq entry net handle DELETE => net;
 fun delete_term_safe eq entry net = delete_term eq entry net handle DELETE => net;
