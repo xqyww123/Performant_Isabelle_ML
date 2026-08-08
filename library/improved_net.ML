@@ -11,7 +11,9 @@ match_term no longer treats lambda abstractions as wildcards; instead they are
 encoded as virtual applications and discriminated by body structure.
 Terms are automatically beta-eta-normalized on insert/delete/match/unify.  On the
 query side the normalization is fused into the descent (`nf_view'): the net stops
-at a `Leaf', so normalization stops there too.
+at a `Leaf', so normalization stops there too.  (One exception: deciding eta for
+an abstraction scans the whole operator, whatever the net's depth -- see
+`eta_operator'.)
 
 MODIFIED BY: Qiyuan Xu
 
@@ -307,7 +309,12 @@ fun look1 (atoms, a) nets =
     NONE => nets
   | SOME net => net :: nets);
 
-(*** Normalization fused with the descent: as deep as the net goes and no deeper ***)
+(*** Normalization fused with the descent: as deep as the net goes and no deeper.
+     Exception: deciding eta for an abstraction scans its whole operator
+     (`eta_operator's `Envir.beta_norm' guard has no early exit), whatever the
+     net's depth.  Real workloads never trigger it (measured 0 firings); the
+     synthetic shape that pays is the cascading eta tower, priced and archived
+     in INET_FUSED_NORM_IMPL_PLAN.md par-6.6/par-17. ***)
 
 val head_norm = Envir.head_norm Envir.init;
 
