@@ -9,7 +9,9 @@ From the book
 
 match_term no longer treats lambda abstractions as wildcards; instead they are
 encoded as virtual applications and discriminated by body structure.
-Terms are automatically beta-eta-normalized on insert/delete/match/unify.
+Terms are automatically beta-eta-normalized on insert/delete/match/unify.  On the
+query side the normalization is fused into the descent (`nf_view'): the net stops
+at a `Leaf', so normalization stops there too.
 
 MODIFIED BY: Qiyuan Xu
 
@@ -106,8 +108,10 @@ fun encode_type (Type (c, Ts)) = Term.list_comb (Const (c, dummyT), map encode_t
 
   PRECONDITION: the term is beta-normal.  The front-rigid branch argues that a
   substitution cannot erase `x' from a front holding no schematic, which is false on
-  a beta redex.  The four entry points run `norm' first; the exported `key_of_term'
-  and `insert' do not.
+  a beta redex.  The entry points that build keys (`insert_term', `insert_term_last',
+  `delete_term') run `norm' first; the exported `key_of_term' and `insert' do not.
+  (`match_term' and `unify_term' build no keys -- they normalize along the descent,
+  see `nf_view'.)
 
   Edit the front-rigid branch last: it is the only clause resting on a negative
   property rather than an impossibility, it is the one already broken once, and
@@ -291,47 +295,114 @@ fun look1 (atoms, a) nets =
     NONE => nets
   | SOME net => net :: nets);
 
+(*** Normalization fused with the descent: as deep as the net goes and no deeper ***)
+
+val head_norm = Envir.head_norm Envir.init;
+
+(*`nf_view t' returns a term with the same beta-eta normal form as `t' whose
+  outermost shape -- `Abs', or rigid/Var head plus number of arguments -- is already
+  the shape of that normal form.  Proper subterms are left as they are: the descent
+  below normalizes them if and when it reaches them.  No precondition on `t'.
+
+  Beta is upstream's `Envir.head_norm' with the empty environment, called only where
+  a spine head is an `Abs'; a plain `Abs' node recurses into its body directly, so a
+  lambda tower costs one step per binder, not one head normalization per binder.
+  Eta is decided the way `Envir.eta_same' (envir.ML) decides it --
+  `Term.is_dependent' on the operator -- except that the operator is beta-normalized
+  first: upstream may test the raw operator only because `beta_eta_contract' runs
+  `eta_contract' after `beta_norm', and `Envir.beta_norm' is the identity (and a
+  single scan) when the operator holds no redex.
+
+  One property carries the eta decision: eta contraction never changes the set of
+  loose bound variables of a term, so `is_dependent' answers the same on
+  `Envir.beta_norm f' as on the full normal form of `f'.  (A contraction step
+  `Abs (x, T, g $ Bound 0) -> decr g' with `g' not depending on `Bound 0' sends
+  loose set {i-1 | i in loose(g), i >= 1} to itself.)
+
+  `eta_operator' hands back the very term to be decremented, so a `SOME' always
+  carries a term without a loose `Bound 0': `Term.incr_boundvars ~1' can neither
+  produce `Bound ~1' nor capture a variable.  Do not change it to return `bool' --
+  the raw `f' may still hold the loose `Bound 0' that only beta removes, and
+  decrementing that one is a silent bug no differential can see.*)
+fun nf_view t =
+      (case t of
+         Abs (x, T, b) =>
+           let val b' = nf_view b in
+             (case (case b' of
+                      f $ u => if nf_is_bound0 u then eta_operator f else NONE
+                    | _ => NONE) of
+               SOME f' => nf_view (Term.incr_boundvars ~1 f')     (*eta fires; cascades*)
+             | NONE => if pointer_eq (b, b') then t else Abs (x, T, b'))
+           end
+       | _ =>
+           (case head_of t of
+              Abs _ => nf_view (head_norm t)          (*spine-head redex: contract it*)
+            | _ => t))                                (*rigid or Var head: done, no work*)
+
+(*a non-`Bound' operand may still normalize to one: `(%y. y) x', `%y. x y'*)
+and nf_is_bound0 u = (case nf_view u of Bound 0 => true | _ => false)
+
+and eta_operator f =
+      let val f' = Envir.beta_norm f
+      in if Term.is_dependent f' then NONE else SOME f' end;
+
 (*Return the nodes accessible from the term (cons them before nets)
   "unif" signifies retrieval for unification rather than matching.
   Var in net matches any term.
   Abs or Var in object: if "unif", regarded as wildcard,
                                    else matches only a variable in net.
-*)
+
+  INVARIANT: every term handed to `matching' is an `nf_view' result.  All call
+  sites establish it: both entry points apply it, `rands' applies it to every
+  argument it descends into, and `lambda_arc' hands on a body that came out of
+  `nf_view' normalized.  (`encode_type' output holds no `Abs', no `Bound' and no
+  redex, so `nf_view' is the identity on it.)*)
 fun matching unif t net nets =
-  let fun rands _ (Leaf _, nets) = nets
-        | rands t (Net{comb,atoms,...}, nets) =
-            case t of
-                f$t => fold_rev (matching unif t) (rands f (comb,[])) nets
-              | Const(\<^const_name>\<open>Pure.type\<close>, \<^Type>\<open>itself T\<close>) =>
-                       fold_rev (matching unif (encode_type T)) (rands (Const("T", Term.dummyT)) (comb,[])) nets
-              | Const(c,_) => look1 (atoms, c) nets
-              | Free(c,_)  => look1 (atoms, c) nets
-              | Bound i    => look1 (atoms, Name.bound i) nets
-              | _          => nets
-  in
-     case net of
+      (case net of
          Leaf _ => nets
-       | Net{var,...} =>
-             case head_of t of
-                 Var _ => if unif then net_skip net nets
-                          else var::nets           (*only matches Var in net*)
+       | Net {var, ...} =>
+           (case head_of t of
+              Var _ => if unif then net_skip net nets
+                       else var :: nets           (*only matches Var in net*)
   (*If "unif" then a var instantiation in the abstraction could allow
     an eta-reduction, so regard the abstraction as a wildcard.*)
-               | Abs (_, _, body) =>
-                   if unif then net_skip net nets
-                   else rands (Const("\<lambda>", dummyT) $ body) (net, var::nets)
-               | _ => rands t (net, var::nets)  (*var could match also*)
-  end;
+            | Abs (_, _, body) =>
+                if unif then net_skip net nets
+                else lambda_arc unif body (net, var :: nets)
+            | _ => rands unif t (net, var :: nets)))   (*var could match also*)
+
+and rands _ _ (Leaf _, nets) = nets
+  | rands unif t (Net {comb, atoms, ...}, nets) =
+      (case t of
+         f $ u =>
+           (case rands unif f (comb, []) of
+              [] => nets                       (*no arc wants `u': do not normalize it*)
+            | ns => fold_rev (matching unif (nf_view u)) ns nets)
+       | Const (\<^const_name>\<open>Pure.type\<close>, \<^Type>\<open>itself T\<close>) =>
+           (case rands unif (Const ("T", Term.dummyT)) (comb, []) of
+              [] => nets
+            | ns => fold_rev (matching unif (encode_type T)) ns nets)
+       | Const (c, _) => look1 (atoms, c) nets
+       | Free (c, _)  => look1 (atoms, c) nets
+       | Bound i      => look1 (atoms, Name.bound i) nets
+       | _            => nets)
+
+(*what `rands' does for the virtual application Const("\<lambda>") $ body, except that
+  `body' came out of `nf_view' already and must not be normalized a second time --
+  else the body of an n-fold nested abstraction is re-normalized n times*)
+and lambda_arc unif body (Net {comb = Net {atoms, ...}, ...}, nets) =
+      fold_rev (matching unif body) (look1 (atoms, "\<lambda>") []) nets
+  | lambda_arc _ _ (_, nets) = nets;
 
 fun extract_leaves l = maps (fn Leaf xs => xs) l;
 
 (*return items whose key could match t*)
 fun match_term net t =
-    extract_leaves (matching false (norm t) net []);
+    extract_leaves (matching false (nf_view t) net []);
 
 (*return items whose key could unify with t*)
 fun unify_term net t =
-    extract_leaves (matching true (norm t) net []);
+    extract_leaves (matching true (nf_view t) net []);
 
 
 (** operations on nets **)
