@@ -28,12 +28,15 @@ axiomatization
   g2 :: "nat \<Rightarrow> nat \<Rightarrow> nat" and
   qh :: "(nat \<Rightarrow> nat) \<Rightarrow> nat" and
   qh2 :: "(nat \<Rightarrow> nat \<Rightarrow> nat) \<Rightarrow> nat" and
-  f5 :: "nat \<Rightarrow> nat"
+  f5 :: "nat \<Rightarrow> nat" and
+  qb :: "(bool \<Rightarrow> nat) \<Rightarrow> nat" and
+  pb :: "bool \<Rightarrow> nat"
 
 ML \<open>
 val ctxt0 = \<^context>;
 val thy0 = Proof_Context.theory_of ctxt0;
 val natT = \<^typ>\<open>nat\<close>;
+val boolT = \<^typ>\<open>bool\<close>;
 
 fun dumpT (Type (n, Ts)) = "T" ^ n ^ "[" ^ implode_space (map dumpT Ts) ^ "]"
   | dumpT (TFree (n, S)) = "F" ^ n ^ "{" ^ implode_space S ^ "}"
@@ -63,30 +66,57 @@ val binary = [(\<^term>\<open>g0\<close>, 2), (\<^term>\<open>g1\<close>, 3), (\
 val qhC = \<^term>\<open>qh\<close>;
 val qh2C = \<^term>\<open>qh2\<close>;
 val f5C = \<^term>\<open>f5\<close>;
+val qbC = \<^term>\<open>qb\<close>;
+val pbC = \<^term>\<open>pb\<close>;
 val qh_level = 5;
 
 fun below lvl xs = filter (fn (_, l) => l < lvl) xs;
 
-(*random term.  `bs' is the list of de Bruijn indices in scope, innermost first.
-  Bound leaves are biased toward an OUTER binder when one exists: matches whose
-  bindings mention a non-innermost contextual binder are what exercise depth
+(*TWO BASE TYPES.  `qb' binds a bool and `pb' spends one, so a generated term can
+  have binders of two different types in scope at once.  Without that, mixing up
+  WHICH contextual binder is which is invisible: every entry of the table has the
+  same type, so a permuted table still answers every type query correctly.  The
+  directed corpus (Skel_Typed) pins that down by hand; this makes the random
+  corpus able to see it too.
+
+  `bs' is therefore the binders in scope WITH their types, innermost first, not
+  bare indices.*)
+fun shift_bs n bs = map (fn (i, T) => (i + n, T)) bs;
+
+(*a nat-typed leaf drawn from the binders in scope: a nat binder directly, a bool
+  binder through `pb'.  Biased toward an OUTER binder where there is one --
+  bindings that mention a non-innermost binder are what exercise depth
   bookkeeping, and unbiased picks produce them too rarely.*)
-fun pick_bound bs =
-  if length bs >= 2 andalso rand 2 = 0 then Bound (pick (tl bs)) else Bound (pick bs);
+fun bound_leaf bs =
+  let
+    fun of_type T = filter (fn (_, T') => T' = T) bs;
+    fun biased xs = if length xs >= 2 andalso rand 2 = 0 then pick (tl xs) else pick xs;
+    val nats = of_type natT;
+    val bools = of_type boolT;
+  in
+    if null nats andalso null bools then NONE
+    else if null bools then SOME (Bound (#1 (biased nats)))
+    else if null nats orelse rand 2 = 0 then SOME (pbC $ Bound (#1 (biased bools)))
+    else SOME (Bound (#1 (biased nats)))
+  end;
+
 fun gen_term d bs =
   if d <= 0 orelse rand 4 = 0 then
-    (if null bs orelse rand 2 = 0 then #1 (pick nullary) else pick_bound bs)
+    (if null bs orelse rand 2 = 0 then #1 (pick nullary)
+     else (case bound_leaf bs of SOME t => t | NONE => #1 (pick nullary)))
   else
-    (case rand 7 of
+    (case rand 8 of
       0 => #1 (pick unary) $ gen_term (d - 1) bs
     | 1 => #1 (pick unary) $ gen_term (d - 1) bs
     | 2 => #1 (pick binary) $ gen_term (d - 1) bs $ gen_term (d - 1) bs
     | 3 => #1 (pick binary) $ gen_term (d - 1) bs $ gen_term (d - 1) bs
-    | 4 => qhC $ Abs ("u", natT, gen_term (d - 1) (0 :: map (fn i => i + 1) bs))
+    | 4 => qhC $ Abs ("u", natT, gen_term (d - 1) ((0, natT) :: shift_bs 1 bs))
     | 5 => qh2C $ Abs ("u1", natT, Abs ("u2", natT,
-             gen_term (d - 1) (0 :: 1 :: map (fn i => i + 2) bs)))
+             gen_term (d - 1) ((0, natT) :: (1, natT) :: shift_bs 2 bs)))
+    | 6 => (*a binder of the OTHER base type, nested with the nat ones above*)
+        qbC $ Abs ("b", boolT, gen_term (d - 1) ((0, boolT) :: shift_bs 1 bs))
     | _ => (*an explicit beta-redex: the module must contract it eagerly*)
-        Abs ("v", natT, gen_term (d - 1) (0 :: map (fn i => i + 1) bs)) $ gen_term (d - 1) bs);
+        Abs ("v", natT, gen_term (d - 1) ((0, natT) :: shift_bs 1 bs)) $ gen_term (d - 1) bs);
 
 (*random term over symbols of level < lvl, with holes taken from `holes' -- each hole
   used AT MOST ONCE, which is what makes the rule set terminate (see the text above)*)
@@ -159,6 +189,22 @@ fun gen_rule i =
                   P2 $ gen_rhs qh_level [] 2 [] $ gen_rhs qh_level [] 2 []));
         val lhs = qh2C $ Abs ("u1", natT, Abs ("u2", natT, body));
       in mk_thm (Logic.mk_equals (lhs, rhs)) end;
+    (*a left-hand side with one NON-PATTERN spot, `?P n0': a schematic applied to
+      something that is not a bound variable.  `Pattern.match' gives up on it and
+      the whole match falls back to `first_order_match' -- and that fallback is
+      the ONLY path that consults the traversal's own binder table, to type a
+      contextual `Bound' appearing in a binding.  Without this family a mutant
+      that permutes or drops that table is invisible to the random corpus, which
+      is exactly what happened: it took a hand-written sample to see it.
+      Termination: the right-hand side is `gen_rhs' below the head's level, with
+      the hole placed at most once.*)
+    fun fallback () =
+      let
+        val PV = Var ((vname ^ "_P", 0), fT);
+        val (bh, lvl) = pick binary;
+        val lhs = bh $ (PV $ #1 (pick nullary)) $ v 1;
+        val rhs = gen_rhs lvl [v 1] 2 [];
+      in mk_thm (Logic.mk_equals (lhs, rhs)) end;
     (*family-4 proper: the binding is GUARANTEED to land under a new binder on the
       right, so material taken from under contextual binders must come out lifted.
       Termination: head level 6 outranks qh and the binary symbol; XV placed once.*)
@@ -201,6 +247,7 @@ fun gen_rule i =
     | 5 => qh2_fam () | 6 => qh2_fam ()
     | 7 => rep2 ()
     | 8 => fam4 ()
+    | 9 => fallback () | 10 => fallback ()
     | _ => first_order ())
   end;
 
@@ -381,20 +428,61 @@ ML \<open>
   and nat leaves, never a function position or an `Abs' argument): the inputs
   stay well-typed relative to `bvs', because under the garbage-in contract of
   `rewrite_term_bvs' an ill-typed input is out of corpus scope.*)
-val bvs6 = map (fn i => ("z" ^ string_of_int i, natT)) (0 upto 5);
-(*`nat_pos' tracks whether the current position is nat-typed: only there may a
-  subterm be replaced by a loose `Bound'.  Function positions and `Abs' arguments
-  are recursed into but never replaced -- in this grammar every non-`Abs'
-  argument position and every binder body is nat, so the flag is exact.*)
-fun loosen nat_pos t =
+(*MIXED TYPES, deliberately: a table whose entries all have the same type cannot
+  tell a correct traversal from one that permuted it.*)
+val bvs6 =
+  [("z0", natT), ("z1", boolT), ("z2", natT), ("z3", boolT), ("z4", natT), ("z5", natT)];
+
+(*Injection is driven by the EXPECTED TYPE of the position, computed from the
+  term being walked, not by a nat/not-nat flag.  With one base type a flag was
+  exact; with two it is not -- `pb's argument is a bool position, and a flag that
+  says "nat" there builds an ill-typed term.  (It did: caught by O1's
+  `Term.type_of1', which is why that check is worth its cost.)
+
+  `ctx' is the binders of the GENERATED term we are inside, innermost first.  It
+  has to be tracked for two reasons: an index injected under k binders must be
+  shifted past them to still name an entry of `bvs6', and the shifted index must
+  land on an entry of the RIGHT TYPE.  Injecting only at `length ctx + k' keeps
+  every injected `Bound' genuinely loose, which is the point of this corpus.
+
+  The term being walked is closed with respect to `ctx', so `fastype_of1' can be
+  asked about any subterm before it is rewritten; injection preserves types, so
+  the answer stays valid as the walk proceeds.*)
+fun loose_leaf ctx T =
+  let
+    val base = length ctx;
+    fun of_type T' =
+      map_filter (fn (k, (_, T'')) => if T'' = T' then SOME (base + k) else NONE)
+        (map_index I bvs6);
+    val direct = of_type T;
+    val viaT = if T = natT then of_type boolT else [];
+    fun some xs = Bound (nth xs (rand (length xs)));
+  in
+    if null direct andalso null viaT then NONE
+    else if null viaT orelse (not (null direct) andalso rand 2 = 0)
+    then SOME (some direct)
+    else SOME (pbC $ some viaT)
+  end;
+
+fun inject_at ctx T t =
+  if T = natT orelse T = boolT
+  then (case loose_leaf ctx T of SOME u => u | NONE => t)
+  else t;
+
+fun loosen ctx T t =
   (case t of
     u $ v =>
-      loosen false u $
-      (case v of
-        Abs _ => loosen false v
-      | _ => if rand 4 = 0 then Bound (rand 6) else loosen true v)
-  | Abs (a, T, b) => Abs (a, T, loosen true b)
-  | _ => if nat_pos andalso rand 5 = 0 then Bound (rand 6) else t);
+      let
+        val uT = Term.fastype_of1 (ctx, u);
+        val vT = Term.domain_type uT;
+      in
+        loosen ctx uT u $
+        (case v of
+          Abs _ => loosen ctx vT v
+        | _ => if rand 4 = 0 then inject_at ctx vT v else loosen ctx vT v)
+      end
+  | Abs (a, aT, b) => Abs (a, aT, loosen (aT :: ctx) (Term.range_type T) b)
+  | _ => if rand 5 = 0 then inject_at ctx T t else t);
 
 (*O-C, the CLOSE-AND-REOPEN oracle: the only check here that shares no code with
   what it tests.  Replace every loose `Bound k' of the input by a free variable,
@@ -557,7 +645,7 @@ fun fuzz_loose start n =
         val _ = srand (start + i);
         val rules = map gen_rule2 (1 upto (3 + rand 6));
         val net = Merely_Rewrite.make_rules rules;
-        val input = loosen true (gen_term (4 + rand 3) []);
+        val input = loosen [] natT (gen_term (4 + rand 3) []);
         fun run mode =
           Exn.capture (fn () =>
             Merely_Rewrite.rewrite_term_mode mode opts net ctxt0 bvs6 input) ();
