@@ -1,3 +1,5 @@
 *~
 *.swo
 *.swp
+
+*.proof-store.lock
