@@ -8,10 +8,15 @@ Status: implemented (2026-08-13). Reviewed before implementation
 (two-reviewer adversarial debate, 2 turns; all surviving findings were
 documentation/contract/test-coverage fixes, applied below — no design
 change). Code: `library/theory_data_with_constructor.ML`; tests:
-`Test/Theory_Data_With_Constructor_Test.thy`, all 13 §5 items pass under
+`Test/Theory_Data_With_Constructor_Test.thy`, all §5 items pass under
 `ML_process -l Pure` via `Thy_Info.use_thy_legacy`, and a
 deliberately-wrong negative control (asserting verbatim inheritance) was
 run once and failed as required, then deleted.
+
+A second two-turn adversarial review of the implemented code found no
+blocker and no functor defect; its surviving findings (all minor:
+three .ML comment gaps, the 8b/12-counter test gaps, the §5.11
+untested-property note) are folded into this document and the code.
 
 ## 1. Why stock `Theory_Data` is not enough
 
@@ -265,8 +270,15 @@ assert-in-ML style. All theories built by hand with `Theory.begin_theory` /
 7. **Out-of-scope theory reads `empty`**: `get` on a pre-existing loaded
    theory (e.g. Pure) = `empty`.
 8. **Same-base-name siblings are told apart**: two hand-built theories with
-   the same name, different parents; each sees its own `construct` result
-   (stamp is ids, not names).
+   the same name, different parents; each sees its own `construct` result.
+   The "stamp is ids, not names" property needs a second scenario (8b): a
+   same-name parent chain (`mk "S"` over `mk "S"`) — an own-name stamp
+   (the `code.ML` precedent) matches there and inherits verbatim, while
+   siblings alone rebuild correctly under it. A three-generation chain is
+   unconstructible (`extend_ancestors` rejects two "S" ancestors as
+   "Duplicate theory name"), which also makes a parents'-names stamp
+   observationally equivalent to ids on all constructible inputs — no test
+   can or need discriminate that variant.
 9. **Mixed-scope parents take the one-carrier shortcut**: child of one
    in-scope parent and one out-of-scope parent; `construct` receives the
    in-scope pair plus `(out_of_scope_parent, empty)`. This is the only test
@@ -278,9 +290,15 @@ assert-in-ML style. All theories built by hand with `Theory.begin_theory` /
 10. **Two instances, one begin**: both constructed, each exactly once
     (per-instance counters; pins §3.4's per-instance independence).
 11. **`put` does not trigger reconstruction**: `put v'` in a theory, `get`
-    still `v'` afterwards — the stamp survives `put`.
-12. **Value survives `Theory.end_theory` unchanged** (the functor registers
-    no end wrapper — contrast `zterm.ML`, which deliberately clears at end).
+    still `v'` afterwards, counter unmoved. Deliberately untested: that the
+    stamp itself survives `put` — a stamp-clearing `put` passes this whole
+    suite (a child's begin rebuilds either way); the only discriminating
+    experiment is a client `at_begin` wrapper that `put`s this instance's
+    data mid-begin, judged disproportionate.
+12. **Value survives `Theory.end_theory` unchanged, and the counter too**
+    (the functor registers no end wrapper — contrast `zterm.ML`, which
+    deliberately clears at end; the value alone cannot detect an end wrapper
+    that reconstructs, since reconstruction reproduces the same value).
 13. **`make_parents` reduction**: D imports A and B where B imports A;
     `construct` at D receives only the B pair (§2.1).
 

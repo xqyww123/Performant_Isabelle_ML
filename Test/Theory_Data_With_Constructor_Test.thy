@@ -4,8 +4,9 @@
 
   The instance's value is a string spelling out the whole construction:
   construct [(p1, v1), (p2, v2)] = "C(p1=v1, p2=v2)" (base names).  Every
-  expected value is computed by the same function, so the assertions state
-  the contract ("value = construct(parents with their values)") directly.
+  construct-produced expected value is computed by the same function, so those
+  assertions state the contract ("value = construct(parents with their
+  values)") directly; the `empty` and `put` cases expect their literals.
 
   The functor applications sit in the first ML block; the assertions in the
   second.  This split is REQUIRED for test 6: \<^theory> is the static
@@ -111,6 +112,16 @@ val _ = check "(8) same-name siblings"
    TDWC_1.get s2 = tdwc_value [(pY, vY)] andalso
    TDWC_1.get s1 <> TDWC_1.get s2)
 
+(* 8b: the stamp is ids, not names.  s3 shares its parent s1's base name; an
+   implementation stamping with the theory's own name (the code.ML precedent)
+   would find the inherited stamp "S" equal to its own name and keep s1's
+   value verbatim.  (A deeper chain is unconstructible: a child of s3 would
+   have both s1 and s3, base name "S" twice, in its ancestors, which
+   extend_ancestors rejects as "Duplicate theory name".) *)
+val s3 = mk "S" [s1]
+val _ = check "(8b) same-name parent chain reconstructs"
+  (TDWC_1.get s3 = tdwc_value [(s1, TDWC_1.get s1)])
+
 (* 9: mixed-scope parents -- the one-carrier (Datatab.default) path.
    pO is hand-built directly over Pure: out of scope, and not subsumed by pX. *)
 val pO = mk "O" [pure]
@@ -129,12 +140,15 @@ val _ = check "(10) both instances constructed exactly once"
 val _ = check "(10b) second instance's value"
   (TDWC_2.get c10 = tdwc_value [(pX, TDWC_2.get pX)])
 
-(* 12: value survives end_theory unchanged *)
+(* 12: value survives end_theory unchanged, and no construction runs at end
+   (the value alone cannot tell "no end wrapper" from "an end wrapper that
+   reconstructs" -- reconstruction would reproduce the same string) *)
 val c12 = mk "T12" [pX]
 val v12 = TDWC_1.get c12
+val n12 = ! tdwc_counter1
 val c12' = Theory.end_theory c12
 val _ = check "(12) value survives end_theory"
-  (TDWC_1.get c12' = v12)
+  (TDWC_1.get c12' = v12 andalso ! tdwc_counter1 = n12)
 
 in
 val _ = writeln "Theory_Data_With_Constructor_Test: all checks passed"

@@ -9,7 +9,11 @@
   - `construct` is called exactly once per begin, with Theory.parents_of and
     their values, in that order; an out-of-scope parent contributes `empty`.
     It is never called with []; out-of-scope theories read `empty`.
-  - Scope = the declaring theory and its descendants.  Heap-restored theories
+    The declaring theory's own construction receives ONLY (parent, empty)
+    pairs -- its imports predate the declaration -- so `construct` must not
+    assume its inputs were themselves produced by `construct`.
+  - Scope = the declaring theory (the theory whose ML block applies the
+    functor) and its descendants.  Heap-restored theories
     do NOT re-run construction: values holding process-local resources still
     need their own process-identity check.
   - Context.join_thys bypasses the hook and keeps only the first fork's
@@ -26,7 +30,9 @@
 signature THEORY_DATA_WITH_CONSTRUCTOR_ARGS =
 sig
   type T
-  val empty : T                             (*value outside the functor's scope*)
+  val empty : T   (*value outside the functor's scope; evaluated once and shared
+                    by ALL out-of-scope theories, mutable content included --
+                    must be safe to share*)
   val construct : (theory * T) list -> T    (*parents with their values -> value*)
 end
 
