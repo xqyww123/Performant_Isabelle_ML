@@ -121,6 +121,7 @@ jobs:
           for want in \
             share/isabelle-performant-ml/ROOT \
             share/isabelle-performant-ml/Performant_Isabelle_ML.thy \
+            share/isabelle-performant-ml/HOL/SSymb.thy \
             bin/.isabelle-performant-ml-post-link.sh \
             bin/.isabelle-performant-ml-pre-unlink.sh \
             Scripts/.isabelle-performant-ml-post-link.bat \
@@ -211,7 +212,7 @@ jobs:
         run: |
           set -euo pipefail
           conda activate v
-          isabelle build -v Performant_Isabelle_ML
+          isabelle build -v Performant_Isabelle_ML Performant_Isabelle_HOL
 
   publish:
     needs: verify
@@ -319,7 +320,7 @@ jobs:
           else
             ISA="$CONDA_PREFIX/bin/isabelle"
           fi
-          "$ISA" build -v Performant_Isabelle_ML
+          "$ISA" build -v Performant_Isabelle_ML Performant_Isabelle_HOL
 
       - name: "the pre-unlink UNREGISTERED it"
         run: |

@@ -40,6 +40,7 @@ build:
       mkdir -p "$dest"
       cp -a "$SRC_DIR/ROOT"                       "$dest/"
       cp -a "$SRC_DIR/Performant_Isabelle_ML.thy" "$dest/"
+      cp -a "$SRC_DIR/HOL"                        "$dest/"
       cp -a "$SRC_DIR/library"                    "$dest/"
       cp -a "$SRC_DIR/contrib"                    "$dest/"
       find "$dest" -name '*~' -delete          # editor backups must not ship
