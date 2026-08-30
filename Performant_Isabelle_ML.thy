@@ -9,6 +9,8 @@ ML_file \<open>library/merely_rewrite.ML\<close>
 ML_file \<open>library/hash_table.ML\<close>
 ML_file \<open>library/term_size.ML\<close>
 ML_file \<open>library/theory_data_with_constructor.ML\<close>
+ML_file \<open>library/event_log.ML\<close>
+ML_file \<open>library/exception_log.ML\<close>
 ML_file \<open>library/race.ML\<close>
 
 (* MessagePack serialization library (mlmsgpack), relocated here from Isabelle_RPC

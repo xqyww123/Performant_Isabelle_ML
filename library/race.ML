@@ -185,6 +185,13 @@ fun contains_interrupt exn =
       SOME exns => exists Exn.is_interrupt exns
     | NONE => false)
 
+(*breakdown attribution (EVENT_LOG_PLAN 7): the two branches below where an
+  interrupt LEAVES the race are record points -- a breakdown has no raise
+  position, so its diagnostic value is the first site that sees it; proper
+  cancellations are the engine working as designed and are not logged*)
+fun log_escaping site name =
+  Exception_Log.record_breakdown (site ^ " escaping, racer=" ^ name)
+
 
 (** serial mode: run in list order, stop at the first decisive result **)
 
@@ -200,8 +207,10 @@ fun race_serial (racers: 'a racer list) =
                forked = false}
           | Exn.Exn (Timeout.TIMEOUT _) => go rest ((name, Timed_Out) :: exits)
           | Exn.Exn exn =>
-              if contains_interrupt exn then Exn.reraise exn
-              else go rest ((name, Crashed exn) :: exits))
+              (if contains_interrupt exn
+               then (log_escaping "Race.serial" name exn;
+                     Exn.reraise exn)
+               else go rest ((name, Crashed exn) :: exits)))
   in go racers [] end
 
 
@@ -234,7 +243,7 @@ fun race_forked (racers: 'a racer list) =
         normal attributes); classifying the outcome and recording a claim run
         under deferred interrupts, so a decisive result that has been computed
         is always recorded.*)
-      fun racer_job i (_, body) () =
+      fun racer_job i (name, body) () =
         Thread_Attributes.uninterruptible_body (fn run =>
           (case Exn.capture_body (fn () => run body ()) of
             Exn.Res NONE => Gave_None
@@ -244,7 +253,7 @@ fun race_forked (racers: 'a racer list) =
                Discarded x)
           | Exn.Exn (Timeout.TIMEOUT _) => Timed_Out
           | Exn.Exn exn =>
-              if not (contains_interrupt exn) then
+              (if not (contains_interrupt exn) then
                 (*a non-interrupt exception is this racer's failure only and
                   must NOT escape the job: all racers share one group, so an
                   escaping exception would reach assign_result
@@ -262,12 +271,13 @@ fun race_forked (racers: 'a racer list) =
                   down, and re-raise.*)
                 (Synchronized.change state (apsnd (K true));
                  Future.cancel_group race_group;
+                 log_escaping "Race.parallel" name exn;
                  Exn.reraise exn)
               else
                 (*not our cancellation, not the caller's thread: provably the
                   racer's own nested machinery (see EXCEPTIONS above) -- this
                   racer's end alone*)
-                Cancelled))
+                Cancelled)))
 
       val futures =
         Future.forks
