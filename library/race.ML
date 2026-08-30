@@ -101,10 +101,12 @@
          executing that racer's body picked up during the join is
          indistinguishable from the caller's absorbed cancellation; the
          engine fails safe and cancels the whole race;
-     (b) a foreign interrupt arriving just as a racer's own `Timeout.apply`
-         deadline expires is reported as that racer's timeout
-         (timeout.ML:47-54): the racer exits Timed_Out and the cancellation
-         is consumed;
+     (b) a cancellation that reaches a racer as Exn.Interrupt_Breakdown (its
+         break flag lost, accounted_timeout.ML) after that racer's own
+         `Timeout.apply` timer has fired is claimed by the accounted timeout
+         as Timeout.TIMEOUT: the racer exits Timed_Out and the cancellation
+         is consumed.  The Timed_Out branches below (serial and forked) run
+         before the interrupt attribution, which is what makes this so;
      (c) when the caller's thread is executing a racer body picked up during
          the join and another racer's claim cancels the field in the same
          instant as the caller's own enclosing `Timeout.apply` fires, the two
@@ -158,7 +160,6 @@ sig
   type 'a racer = string * (unit -> 'a option)
   datatype 'a exit =
     Won | Gave_None | Timed_Out | Crashed of exn | Cancelled | Discarded of 'a
-  val contains_interrupt: exn -> bool
   val race: 'a racer list ->
     {winner: (string * 'a) option,
      exits: (string * 'a exit) list,  (*same order as the input list*)
@@ -172,18 +173,6 @@ type 'a racer = string * (unit -> 'a option)
 
 datatype 'a exit =
   Won | Gave_None | Timed_Out | Crashed of exn | Cancelled | Discarded of 'a
-
-(*Par_Exn is a container, not a failure: proper interrupts never sit inside one
-  (Par_Exn.make filters them), but Exn.Interrupt_Breakdown is NOT proper and
-  can -- while is_interrupt of the container itself is false.  Test per
-  component, or a cancellation coming out of a racer that forks internally
-  would be misread as a crash.  Exported as an interim home, pending
-  extraction to a shared kernel of this recurring idiom.*)
-fun contains_interrupt exn =
-  Exn.is_interrupt exn orelse
-    (case Par_Exn.dest exn of
-      SOME exns => exists Exn.is_interrupt exns
-    | NONE => false)
 
 (*breakdown attribution (EVENT_LOG_PLAN 7): the two branches below where an
   interrupt LEAVES the race are record points -- a breakdown has no raise
@@ -207,7 +196,7 @@ fun race_serial (racers: 'a racer list) =
                forked = false}
           | Exn.Exn (Timeout.TIMEOUT _) => go rest ((name, Timed_Out) :: exits)
           | Exn.Exn exn =>
-              (if contains_interrupt exn
+              (if Interrupt_Family.contains_interrupt exn
                then (log_escaping "Race.serial" name exn;
                      Exn.reraise exn)
                else go rest ((name, Crashed exn) :: exits)))
@@ -253,7 +242,7 @@ fun race_forked (racers: 'a racer list) =
                Discarded x)
           | Exn.Exn (Timeout.TIMEOUT _) => Timed_Out
           | Exn.Exn exn =>
-              (if not (contains_interrupt exn) then
+              (if not (Interrupt_Family.contains_interrupt exn) then
                 (*a non-interrupt exception is this racer's failure only and
                   must NOT escape the job: all racers share one group, so an
                   escaping exception would reach assign_result
@@ -340,7 +329,7 @@ fun race_forked (racers: 'a racer list) =
                   (case result of
                     Exn.Res e => e
                   | Exn.Exn exn =>
-                      if contains_interrupt exn then Cancelled else Crashed exn))))
+                      if Interrupt_Family.contains_interrupt exn then Cancelled else Crashed exn))))
           (map_index I racers) results
     in {winner = winner, exits = exits, forked = true} end)
 
