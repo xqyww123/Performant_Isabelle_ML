@@ -88,10 +88,16 @@ sig
   val raw_apply_physical: Time.time -> ('a -> 'b) -> 'a -> 'b
   val apply: Time.time -> ('a -> 'b) -> 'a -> 'b
   val apply_physical: Time.time -> ('a -> 'b) -> 'a -> 'b
+  (*TEMPORARY (PLAN 6.2, R3): verification-period record of every claim,
+    installed by library/accounted_timeout_probe.ML; deleted with it*)
+  val claim_probe:
+    ({physical: bool, timeout: Time.time, elapsed: Time.time, exn: exn} -> unit) Unsynchronized.ref
 end
 
 structure Accounted_Timeout: ACCOUNTED_TIMEOUT =
 struct
+
+val claim_probe = Unsynchronized.ref (fn _ => ())
 
 (*bound before the shadow below: the originals*)
 val raw_apply = Timeout.apply
@@ -127,7 +133,11 @@ fun apply' physical timeout f x =
           Exn.Res y => y
         | Exn.Exn exn =>
             if fired andalso Interrupt_Family.all_breakdown exn
-            then raise Timeout.TIMEOUT (Time.now () - start)
+            then
+              let val elapsed = Time.now () - start in
+                ! claim_probe {physical = physical, timeout = timeout, elapsed = elapsed, exn = exn};
+                raise Timeout.TIMEOUT elapsed
+              end
             else Exn.reraise exn)
       end)
 

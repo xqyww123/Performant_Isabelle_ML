@@ -313,6 +313,25 @@ rev 1 此处有两条:(一)`agent_server.ML:1919`、`:2135` 的 `Exn.capture Fut
   **本项目**的 `race.ML` 文件头,不是 Isabelle 官方文档。官方记录的只有总设计(实现手册
   Interrupts 段:中断可以是 OOM/栈溢出/超时/线程信号/进程信号,异常层面不分辨)与
   Break/Breakdown 之分(NEWS 2025,quasi-error)。
+- **实施记录(2026-08-31,§6 第 1、2 步)**:名字空间传播实验通过(子 theory `Main` 在前、遮蔽
+  theory 在后,`Timeout.apply` 解析到遮蔽版本;负对照确认断言失败会报出)。中断族判据内核落为
+  `structure Interrupt_Family`(`find_interrupt`/`contains_interrupt`/`all_breakdown`),与
+  `Accounted_Timeout` 同文件;`Race` 不再导出 `contains_interrupt`,`reasoners.ML:1376` 与
+  `sledgehammer_solver.ML` 的 `normalise` 改调内核,`classify` 里冗余的中断重抛删去。Minilang
+  环境实测:计时器开火后的 Breakdown(裸的与全 Breakdown 的 `Par_Exn`)被改判 `TIMEOUT`,开火前
+  的原样上抛,proper 中断容器不被认领,普通异常原样上抛。提交:`Performant_Isabelle_ML` 6556a85、
+  `auto_sledgehammer` 03411bb、`Isa-Mini` 487c695、`phi-system` da0626a4、主仓库 f02dbfb。
+  **与 §6 第 2 步的偏差**:`breakdown_probe.ML` 在实施时已不存在(另一会话撤除),R3 的临时计数
+  改为 `Event_Log` 的独立类别 `accounted_timeout_claim`(每次改判一条:physical、预算、进入包装
+  至改判的耗时、异常形态、任务名),写入器在临时文件 `library/accounted_timeout_probe.ML`,钩子是
+  `Accounted_Timeout.claim_probe`;不写 `Exception_Log`;两者与钩子一并在 §6 第 5 步删除。
+- **验收记录(2026-08-31,§6 第 3 步,`Bucket_Hash.thy` 全篇,本机 Phi_System_Base 基座 REPL)**:
+  第一轮(proof store 大面积失效,4 个 AoA 会话重证,3762 s):命令层 Breakdown **0 条**,改判 0 次,
+  `Exception_Log` 9 条 Breakdown 全部在 `Phi_Sledgehammer_Solver.normalise`(8,`Par_List.get_some`
+  的并行输家)与 `guard-racer R-conv`(1)——输家被取消、账丢在输家自己计时器开火之前,按设计不
+  认领,由 `Par_List`/race 引擎当取消处理,无一离开。第二轮(store 已修好,回放路径,137 s):
+  命令层 Breakdown 0 条,改判 0 次,`Exception_Log` 0 条。门 (a)(b) 对该场景通过。全量
+  `PhiEx_All.thy` 待 cslh19 空出后复跑。
 - 一手核对的细节:`is_interrupt_proper` = 裸中断 ∨ `Interrupt_Break`;`Interrupt_Break` 亦可被
   直接构造(`isabelle_thread.ML:139` 起的五处),不经账本;`expose_interrupt_result` 的正当用途是
   兜住"计时器在身体返回后才开火"的窗口,不能简单移除,其缺陷仅在无条件清账 + 非中断分支丢弃
