@@ -33,8 +33,15 @@ setup_lifting type_definition_symbol
 
 declare mk_symbol_inject[simplified, iff]
 
-lemma mk_symbol_cong[cong]:
-  \<open>mk_symbol A \<equiv> mk_symbol A\<close> .
+text \<open>No \<open>mk_symbol_cong\<close> here any more (author ruling 2026-08-31): the old
+  representation wrapped an interned NUMERAL in \<open>mk_symbol\<close>, and a reflexive cong
+  froze that argument so simplification (e.g. \<open>1 \<leadsto> Suc 0\<close>) could not break the
+  shape the printer and the ML recogniser matched on.  The digit-chain
+  representation has no numeral to protect, \<open>mk_symbol\<close> is the typedef's Abs and
+  never appears in ordinary terms, and freezing its argument actively harms the
+  one consumer that builds \<open>mk_symbol <numeral>\<close> on purpose -- the guard refuter,
+  whose folded arithmetic must evaluate before the model search
+  (phi-system, GUARD_NITPICK_FALSIFY_PLAN.md section 26.10).\<close>
 
 lift_definition Z :: symbol is 0 .
 lift_definition A :: \<open>symbol \<Rightarrow> symbol\<close> is \<open>\<lambda>x. x * 6 + 1\<close> .
@@ -47,14 +54,20 @@ lift_definition F :: \<open>symbol \<Rightarrow> symbol\<close> is \<open>\<lamb
 text \<open>Deciding equality of two symbols by simplification: injectivity of each digit,
   and disequality of every two distinct digits and of every digit against \<open>Z\<close>.
   A disequality is used by the simplifier in the written orientation only, so each
-  is declared in both (\<open>[simp, symmetric, simp]\<close>).\<close>
+  is declared in both (\<open>[simp, symmetric, simp]\<close>).
 
-lemma [simp]:
+  The three groups are named because a simpset that REPLACES the ambient one (rather
+  than extending it) must list them explicitly -- \<open>\<phi>safe_simp\<close> in phi-system decides
+  field-name distinctness of named tuples with nothing but these.  Note that the
+  \<open>symmetric\<close> attribute leaves the named fact in the flipped orientation; a client
+  wanting both writes \<open>name name[symmetric]\<close>.\<close>
+
+lemma symbol_digit_inject[simp]:
   \<open>A x = A y \<longleftrightarrow> x = y\<close>  \<open>B x = B y \<longleftrightarrow> x = y\<close>  \<open>C x = C y \<longleftrightarrow> x = y\<close>
   \<open>D x = D y \<longleftrightarrow> x = y\<close>  \<open>E x = E y \<longleftrightarrow> x = y\<close>  \<open>F x = F y \<longleftrightarrow> x = y\<close>
   by (transfer, simp)+
 
-lemma [simp, symmetric, simp]:
+lemma symbol_digit_distinct[simp, symmetric, simp]:
   \<open>A x \<noteq> B y\<close> \<open>A x \<noteq> C y\<close> \<open>A x \<noteq> D y\<close> \<open>A x \<noteq> E y\<close> \<open>A x \<noteq> F y\<close>
   \<open>B x \<noteq> C y\<close> \<open>B x \<noteq> D y\<close> \<open>B x \<noteq> E y\<close> \<open>B x \<noteq> F y\<close>
   \<open>C x \<noteq> D y\<close> \<open>C x \<noteq> E y\<close> \<open>C x \<noteq> F y\<close>
@@ -62,9 +75,24 @@ lemma [simp, symmetric, simp]:
   \<open>E x \<noteq> F y\<close>
   by (transfer, presburger)+
 
-lemma [simp, symmetric, simp]:
+lemma symbol_digit_neq_zero[simp, symmetric, simp]:
   \<open>A x \<noteq> Z\<close> \<open>B x \<noteq> Z\<close> \<open>C x \<noteq> Z\<close> \<open>D x \<noteq> Z\<close> \<open>E x \<noteq> Z\<close> \<open>F x \<noteq> Z\<close>
   by (transfer, simp)+
+
+text \<open>Folding a digit chain back into the wrapped-numeral shape \<open>mk_symbol n\<close>: a model
+  finder (Nitpick) copes with \<open>mk_symbol 13\<close> -- one literal under the type's Abs --
+  but not with \<open>A (B Z)\<close>, whose digit functions it must interpret as \<open>6x+k\<close> inside a
+  tiny nat scope.  NOT simp rules: the digit chain is the representation everywhere
+  else (printing recognises the digit constants), so a consumer that wants numerals
+  adds these itself, right before the term leaves for the model finder.\<close>
+
+lemma symbol_digit_eval:
+  \<open>Z = mk_symbol 0\<close>
+  \<open>A (mk_symbol n) = mk_symbol (n * 6 + 1)\<close>  \<open>B (mk_symbol n) = mk_symbol (n * 6 + 2)\<close>
+  \<open>C (mk_symbol n) = mk_symbol (n * 6 + 3)\<close>  \<open>D (mk_symbol n) = mk_symbol (n * 6 + 4)\<close>
+  \<open>E (mk_symbol n) = mk_symbol (n * 6 + 5)\<close>  \<open>F (mk_symbol n) = mk_symbol (n * 6 + 6)\<close>
+  by (simp_all add: Abs_symbol_inject[symmetric] Z.rep_eq A.rep_eq B.rep_eq C.rep_eq
+                    D.rep_eq E.rep_eq F.rep_eq mk_symbol_inverse)
 
 ML_file \<open>../library/ssymb_syntax.ML\<close>
 ML_file \<open>../library/ssymb.ML\<close>
