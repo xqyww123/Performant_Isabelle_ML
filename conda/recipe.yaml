@@ -2,8 +2,17 @@ schema_version: 1
 
 # isabelle-performant-ml: the Performant_Isabelle_ML Isabelle session (mutable hash
 # tables + the improved discrimination net `iNet`), as a conda add-on to the base
-# `isabelle` package.  noarch: it ships only source (ROOT + theories + ML) and registers
-# itself with `isabelle components -u`; Isabelle loads/builds the heap on demand.
+# `isabelle` package.  It ships source (ROOT + theories + ML), which Isabelle loads and
+# builds into a heap on demand, PLUS one thing that cannot be source: the native library
+# libperformant_isabelle_ml, prebuilt for all five supported platforms.
+#
+# Still `noarch: generic`, and deliberately so.  The five libraries live side by side in
+# library/native/<platform>/, and library/thread_cpu.ML resolves <platform> from
+# ML_PLATFORM at run time -- so ONE artifact is correct on every platform, and there is
+# nothing for conda to select between.  Isabelle ships its own libsha1.so exactly like
+# this.  The libraries are compiled by the `native` job of
+# .github/workflows/release-conda.yml, each on a runner of its own architecture, and
+# dropped into library/native/<target>/ before rattler-build is invoked.
 #
 # The recipe lives IN this repo, so the source is the repo itself (`source: path: ../`).
 # The build script then copies exactly the files the session needs -- not Test/, not .git,
@@ -17,6 +26,25 @@ context:
 
 source:
   - path: ../
+    # THE NATIVE LIBRARIES DEPEND ON THIS LINE.  For a local `path` source rattler-build
+    # applies the repo's .gitignore by default -- "By default, all files in the local path
+    # that are ignored by `git` are also ignored by Rattler-Build. You can disable this
+    # behavior by setting `use_gitignore` to `false`.", and the reference's own example
+    # annotates it `use_gitignore: false # note: defaults to true`
+    # (https://rattler-build.prefix.dev/latest/reference/recipe_file/).  Our .gitignore
+    # ignores `library/native/*/`, because those are build products and are never
+    # committed -- so with the default the five libraries would be dropped from the source
+    # copy and the package would build green with no binaries in it at all.
+    #
+    # The cost of switching it off is that .git/, editor leftovers and any build residue
+    # under library/native/ (an object file or test binary from an aborted build) come
+    # along too.  .git never reaches the package (the build script below copies only
+    # named subtrees), the editor files are deleted below, and the build residue is
+    # kept out at its source: library/native/build removes its objects, staging file
+    # and test binary on every exit, and the build script below deletes any that
+    # survived a kill -9.  (.gitignore names them too, but only to keep them out of
+    # git; with use_gitignore: false it has no say over this copy.)
+    use_gitignore: false
 
 package:
   name: isabelle-performant-ml
@@ -43,9 +71,45 @@ build:
       cp -a "$SRC_DIR/HOL"                        "$dest/"
       cp -a "$SRC_DIR/library"                    "$dest/"
       cp -a "$SRC_DIR/contrib"                    "$dest/"
-      find "$dest" -name '*~' -delete          # editor backups must not ship
+      # Editor leftovers must not ship.  `*~` alone was enough while .gitignore still
+      # filtered the source copy; `use_gitignore: false` (see `source:` above) now lets
+      # vim swap files through as well when the recipe is built from a working tree.
+      find "$dest" \( -name '*~' -o -name '*.swp' -o -name '*.swo' \) -delete
+      # Residue of an aborted library/native/build (the same three patterns .gitignore
+      # names, path-anchored so nothing legitimate can match).
+      rm -f "$dest"/library/native/*.o "$dest"/library/native/*.staged* "$dest"/library/native/test_thread_cpu
 
       test -f "$dest/ROOT"                     # a valid component has a ROOT
+
+      # ---------------------------------------------------------------------------
+      # The native library, for all five platforms.  These are NOT built here: they
+      # come from the `native` job of .github/workflows/release-conda.yml, which
+      # compiles and checks each on a runner of its own architecture and leaves it
+      # in library/native/<target>/ for the `cp -a` of `library` above to pick up.
+      #
+      # This check is the reason a binary-less package cannot exist.  Everything that
+      # could drop them -- `use_gitignore` reverting to its default, a renamed target,
+      # a `native` leg quietly removed from the matrix -- fails here instead of
+      # surfacing at a user's first Thread_CPU call as an error telling them to build
+      # a library the package already ships.
+      #
+      # The target names are Poly/ML's ML_PLATFORM with any compact-object "_32"
+      # stripped from the architecture; library/thread_cpu.ML computes exactly this
+      # name to choose a directory.  macOS keeps the .so suffix -- that is the name
+      # thread_cpu.ML asks for on every non-Windows platform, so it is not a mistake.
+      # ---------------------------------------------------------------------------
+      missing=0
+      for t in arm64-darwin arm64-linux x86_64-darwin x86_64-linux; do
+        f="$dest/library/native/$t/libperformant_isabelle_ml.so"
+        if [ -f "$f" ]; then echo "  OK  library/native/$t"; else echo "MISSING $f" >&2; missing=1; fi
+      done
+      f="$dest/library/native/x86_64-windows/performant_isabelle_ml.dll"
+      if [ -f "$f" ]; then echo "  OK  library/native/x86_64-windows"; else echo "MISSING $f" >&2; missing=1; fi
+      if [ "$missing" -ne 0 ]; then
+        echo "the package would ship without native libraries; build them with" >&2
+        echo "library/native/build <target>, or let the release workflow's \`native\` job do it" >&2
+        exit 1
+      fi
 
       # ---------------------------------------------------------------------------
       # Link hooks.  BOTH the unix and the Windows set are written UNCONDITIONALLY.
@@ -145,10 +209,11 @@ requirements:
 
 about:
   homepage: https://github.com/xqyww123/Performant_Isabelle_ML
-  summary: "Performant Isabelle/ML: mutable hash tables and an improved discrimination net (iNet)"
+  summary: "Performant Isabelle/ML: hash tables, the iNet discrimination net, a race engine, accounted and thread-CPU timeouts, and Poly/ML's Foreign"
   description: |
-    The Performant_Isabelle_ML Isabelle session, packaged as a conda add-on to the
-    patched `isabelle` distribution.  Ships source only and registers itself as an
-    Isabelle component; the heap is built on demand.
+    The Performant_Isabelle_ML and Performant_Isabelle_HOL sessions, packaged as a
+    conda add-on to the `isabelle` distribution.  Ships the sources and the prebuilt
+    thread-CPU shim for every supported platform, and registers itself as an Isabelle
+    component; heaps are built on demand.
   license: BSD-3-Clause
   repository: https://github.com/xqyww123/Performant_Isabelle_ML

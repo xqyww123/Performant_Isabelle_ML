@@ -1,0 +1,43 @@
+libperformant_isabelle_ml -- the native half of Performant_Isabelle_ML
+
+This directory holds the C sources behind those Isabelle/ML modules that need
+the operating system directly.  Today that is one: thread_cpu.c, the
+per-thread CPU clocks read by library/thread_cpu.ML.  Each source file is
+consumed by the ML file of the same name.
+
+Build it once per machine: ./build with no argument lists the supported
+targets; ./build TARGET compiles the library, checks it -- by running the
+self-test against it, or on x86_64-windows, where the POSIX self-test (dlopen,
+pthreads) cannot run, by checking statically that the linked file is a 64-bit
+PE exporting tc_self, tc_read and tc_free -- and only then installs it as
+./TARGET/libperformant_isabelle_ml.so (on Windows
+./TARGET/performant_isabelle_ml.dll).  TARGET is Poly/ML's ML_PLATFORM with
+any "_32" stripped from the architecture, e.g. x86_64-linux for both
+x86_64-linux and x86_64_32-linux.
+
+The built library is deliberately not committed (.gitignore covers ./*/), so a
+git checkout builds it once per machine.  The conda package, by contrast, ships
+it prebuilt: the `native` job of ../../.github/workflows/release-conda.yml runs
+this script for each of the five targets on a GitHub-hosted runner of that
+architecture at release time, and all five ./TARGET/ directories go into the one
+noarch package -- library/thread_cpu.ML picks the directory for the running
+platform, so a single artifact is correct everywhere (Isabelle ships its own
+libsha1.so the same way).  Getting them past rattler-build's source copy needs
+`use_gitignore: false` in conda/recipe.yaml, since .gitignore hides exactly
+these directories; the recipe asserts all five are present, so a package cannot
+build green without them.  A missing library shows up at first use as an error
+naming this build command; so does a library that will not load -- the prebuilt
+Linux ones require glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9),
+because pthread_getcpuclockid moved into libc at that version, and the macOS
+ones are stamped for macOS 11.0 or newer but were measured only on 14 and 15.
+On an older system ./build TARGET produces a local copy with no such
+requirement.
+
+What has actually been measured, per platform, is recorded in
+../../archive/THREAD_CPU_MEASUREMENTS.md; the header of each .c file states the
+contract that follows from it.  The self-test re-measures the part of it that
+a build can regress -- accuracy, a sleeping thread, a cross-thread read, the
+handle after the thread has ended, and (asserted on macOS) that a held handle
+is not reissued to new threads -- on every build except x86_64-windows, where
+nothing executes the library before it ships; Windows behaviour rests on the
+measurements in ../../archive/THREAD_CPU_MEASUREMENTS.md section 4 instead.

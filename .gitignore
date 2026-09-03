@@ -3,3 +3,10 @@
 *.swp
 
 *.proof-store.lock
+
+# per-platform build products of library/native/build (built per machine, never committed)
+library/native/*/
+# intermediates of library/native/build, for the abort its EXIT trap cannot catch
+library/native/*.o
+library/native/*.staged*
+library/native/test_thread_cpu

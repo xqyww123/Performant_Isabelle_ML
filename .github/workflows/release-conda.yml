@@ -10,6 +10,15 @@
 # CALLING repo's secrets, and a personal account has no org-level secrets.  They must be
 # set on THIS repo (see the `publish` job below) and are passed explicitly, never with
 # `secrets: inherit`.
+#
+# The package is not pure source: it also carries the native library
+# libperformant_isabelle_ml for all five supported platforms.  Those cannot be compiled at
+# install time (conda runs no compiler in a user's env) and cannot be compiled in the
+# `build` job either (one runner is one architecture), so the `native` job below compiles
+# each on a runner of its own architecture and `build` collects the five artifacts before
+# rattler-build runs.  The package itself stays `noarch: generic`: ONE artifact carrying
+# all five, exactly as Isabelle ships its own libsha1.so, because library/thread_cpu.ML
+# picks the directory for the RUNNING platform at run time.
 name: release-conda
 
 on:
@@ -33,12 +42,168 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ---------------------------------------------------------------------------------
+  # The native half of the session.  library/native/build TARGET compiles
+  # libperformant_isabelle_ml from library/native/*.c, checks the freshly linked file
+  # (see library/native/README), and only then installs it as library/native/TARGET/ --
+  # libperformant_isabelle_ml.so everywhere, performant_isabelle_ml.dll on Windows.
+  # (The .so suffix on macOS is deliberate, not an oversight: library/thread_cpu.ML
+  # asks for that exact name on every non-Windows platform.)
+  #
+  # THE GATE IS THE SELF-TEST.  The script exits nonzero when it fails and leaves the
+  # installed library untouched, so a broken platform reddens its own leg here rather
+  # than reaching a user.  x86_64-windows is the one exception: the POSIX self-test
+  # cannot run there, so the script checks the staged DLL statically instead -- a
+  # 64-bit PE exporting the three entry points.  That leg therefore proves the staged
+  # file is a 64-bit PE whose export table names the three entry points -- not that it
+  # loads, and not that it returns correct times; nothing in this workflow loads the
+  # Windows DLL.  Windows behaviour is covered by the measurements in
+  # archive/THREAD_CPU_MEASUREMENTS.md.
+  #
+  # TARGET is Poly/ML's ML_PLATFORM with any compact-object "_32" stripped from the
+  # architecture, which is precisely the directory name library/thread_cpu.ML computes
+  # at run time -- so the artifact names here, the directory names in the package, and
+  # the lookup in ML are all the same five strings.
+  # ---------------------------------------------------------------------------------
+  native:
+    name: "Native library: ${{ matrix.target }}"
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      # Report every platform.  With fail-fast the first red leg cancels the rest, and
+      # the interesting question after a failure is always "which of the five?".
+      fail-fast: false
+      matrix:
+        include:
+          - target: arm64-darwin
+            runner: macos-14          # Apple silicon
+            shell: bash
+          - target: x86_64-darwin
+            runner: macos-15-intel    # The only remaining Intel macOS image.  Do NOT
+                                      # use macos-13: it is retired, and a job assigned
+                                      # to it never starts, never errors and never
+                                      # annotates -- it just queues forever.
+            shell: bash
+          - target: arm64-linux
+            runner: ubuntu-24.04-arm
+            shell: bash
+          - target: x86_64-linux
+            runner: ubuntu-latest
+            shell: bash
+          - target: x86_64-windows
+            runner: windows-latest
+            # msys2/setup-msys2 below installs mingw-w64-x86_64-gcc, which is what puts
+            # gcc under /mingw64/bin -- the exact directory library/native/build prepends
+            # to PATH for this target.
+            shell: msys2 {0}
+    defaults:
+      run:
+        # Matrix-driven because only the Windows leg needs the msys2 shell.  It has to
+        # live HERE: `jobs.<id>.defaults.run` is one of the few keys where GitHub
+        # evaluates the matrix context, while a step-level `shell:` does not accept an
+        # expression at all.
+        shell: ${{ matrix.shell }}
+    steps:
+      # Git for Windows checks out text files with CRLF.  bash then reads the trailing
+      # \r as part of the last word on every line, so library/native/build would set
+      # e.g. sources to "thread_cpu.c<CR>" and fail in ways that read like a compiler
+      # problem.  Unconditional rather than guarded: it is a no-op on the unix runners,
+      # and a condition here would be one more thing that can silently stop matching.
+      # `shell: bash` explicitly -- this runs BEFORE setup-msys2, so on Windows it is
+      # Git-Bash; the job default would name a shell that does not exist yet.
+      - name: "Check out with LF line endings, not CRLF"
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        if: matrix.target == 'x86_64-windows'
+        with:
+          msystem: MINGW64
+          update: false
+          # binutils explicitly: library/native/build inspects the staged DLL with
+          # objdump on this target (its stand-in for the self-test it cannot run), and
+          # a tool that arrives only as a gcc dependency can silently stop arriving.
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+
+      # Which compiler actually answered to `gcc` is the first thing anyone wants from a
+      # failed log -- clang behind the name on macOS, mingw64 gcc on Windows.
+      - name: Machine
+        run: |
+          uname -a
+          which gcc
+          gcc --version
+
+      - name: "Compile, check and install library/native/${{ matrix.target }}/"
+        run: |
+          set -euo pipefail
+          # `bash <script>` rather than `./<script>`: the executable bit is not worth
+          # depending on, least of all across a Windows checkout.  The script cds to
+          # its own directory, so the relative path is all it needs.
+          bash library/native/build "${{ matrix.target }}"
+          echo "===== installed ====="
+          ls -l "library/native/${{ matrix.target }}"
+
+      - name: "The file produced is the one library/thread_cpu.ML will look for"
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            x86_64-windows) want="performant_isabelle_ml.dll" ;;
+            *)              want="libperformant_isabelle_ml.so" ;;
+          esac
+          f="library/native/${{ matrix.target }}/$want"
+          [ -f "$f" ] || { echo "::error::$f was not produced"; exit 1; }
+          # The target name is what library/thread_cpu.ML computes from ML_PLATFORM at
+          # run time, so the bytes under it must be for that architecture.
+          # library/native/build's check only proves the file is sound HERE; this
+          # proves "here" is the architecture the name promises.  Skipped when CC is
+          # set, which is how a deliberate cross
+          # build announces itself (library/native/build honours CC/LD).
+          if [ -z "${CC:-}" ]; then
+            arch="${{ matrix.target }}"; arch="${arch%%-*}"
+            case "$arch:$(uname -m)" in
+              x86_64:x86_64 | arm64:arm64 | arm64:aarch64) ;;
+              *) echo "::error::target ${{ matrix.target }} built on a $(uname -m) runner"; exit 1 ;;
+            esac
+          fi
+          # Informational only -- `file` is absent from some msys2 installs.
+          file "$f" || true
+          # The floors the artifact actually carries, so the CHANGELOG can quote a
+          # log rather than a recollection: the highest glibc symbol version on
+          # Linux, the stamped minimum macOS on darwin.
+          case "${{ matrix.target }}" in
+            *-linux)  echo "glibc floor of this artifact: $(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)" ;;
+            *-darwin) otool -l "$f" | grep -A3 LC_BUILD_VERSION || true ;;
+          esac
+          echo "  OK  $f"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          # The `build` job strips this `native-` prefix back off to recover the target
+          # directory name; keep the two spellings in step.
+          name: native-${{ matrix.target }}
+          path: library/native/${{ matrix.target }}/
+          if-no-files-found: error
+
   build:
     name: "Build isabelle-performant-ml (noarch)"
+    # The five native libraries are INPUTS to the package, not a parallel product: the
+    # recipe refuses to build without them (see conda/recipe.yaml).
+    needs: native
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      # Readme.md and the two SKILL.md are one document kept as three files by hand (an
+      # agent reads the skill copies, a person reads the Readme).  They have drifted
+      # before; a release must not carry a skill that contradicts the Readme.
+      - name: "The three copies of the index are one document"
+        run: |
+          set -euo pipefail
+          diff -q Readme.md SKILL.md
+          diff -q Readme.md .claude/skills/performant-isabelle-ml/SKILL.md
 
       - name: "Read the version from ./VERSION"
         id: ver
@@ -77,6 +242,56 @@ jobs:
             echo "          the middle ones.  Release one tag at a time, then re-run this."
             exit 1; }
 
+      # ---------------------------------------------------------------------------
+      # Put the five prebuilt libraries where the recipe expects them: exactly the
+      # library/native/<target>/ layout of a developer's own `library/native/build`
+      # run, so the recipe copies `library/` wholesale and neither knows nor cares
+      # that CI assembled it.  This MUST come after actions/checkout, which cleans
+      # the workspace of anything it did not put there.
+      # ---------------------------------------------------------------------------
+      - name: "Collect the native libraries built by the `native` job"
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: ${{ runner.temp }}/native
+
+      - name: "Move them into library/native/<target>/"
+        run: |
+          set -euo pipefail
+          # Without `merge-multiple: true` each artifact keeps its own subdirectory:
+          # $RUNNER_TEMP/native/native-<target>/<library file>.  That separation is the
+          # point -- the five files share only two distinct basenames -- so recover the
+          # target name by stripping the `native-` prefix the upload added.
+          for d in "$RUNNER_TEMP"/native/native-*; do
+            t="$(basename "$d")"; t="${t#native-}"
+            mkdir -p "library/native/$t"
+            cp -a "$d/." "library/native/$t/"
+          done
+          echo "===== library/native ====="
+          find library/native -mindepth 2 -type f -printf '  %10s  %p\n' | sort -k2
+
+      - name: "All five must be present -- a package without them is worse than no package"
+        run: |
+          set -euo pipefail
+          # A user's Isabelle finds the library by platform at run time and errors out
+          # naming library/native/build when it is absent.  Shipping a package that is
+          # silently missing one platform would turn a clear "not built" message into a
+          # "you installed the package and it still does not work".  So: hard gate, and
+          # list every offender instead of dying on the first.
+          #
+          # macOS uses the .so suffix too -- that is what library/thread_cpu.ML asks for
+          # on every non-Windows platform, so the build script never emits a .dylib.
+          missing=0
+          for f in \
+            library/native/arm64-darwin/libperformant_isabelle_ml.so \
+            library/native/arm64-linux/libperformant_isabelle_ml.so \
+            library/native/x86_64-darwin/libperformant_isabelle_ml.so \
+            library/native/x86_64-linux/libperformant_isabelle_ml.so \
+            library/native/x86_64-windows/performant_isabelle_ml.dll ; do
+            if [ -f "$f" ]; then echo "  OK  $f"; else echo "::error::missing $f"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
       - name: Install rattler-build
         run: |
           set -euo pipefail
@@ -100,7 +315,7 @@ jobs:
           echo "===== built ====="
           find "$GITHUB_WORKSPACE/out" -name '*.conda' -printf '  %10s  %p\n'
 
-      - name: "Sanity: the package really contains the session and BOTH hook sets"
+      - name: "Sanity: the package really contains the session, the native libraries and BOTH hook sets"
         run: |
           set -euo pipefail
           pkg=$(find "$GITHUB_WORKSPACE/out" -name 'isabelle-performant-ml-*.conda' | head -1)
@@ -118,10 +333,21 @@ jobs:
           echo "===== payload ====="
           find "$work" -maxdepth 3 | sort
 
+          # The five native libraries are asserted HERE as well as in the recipe: the
+          # recipe proves they reached $PREFIX, this proves they survived into the
+          # shipped payload.  They are gitignored, so the recipe carries
+          # `use_gitignore: false` to get them past rattler-build's source copy at all --
+          # a setting that is easy to lose in an edit and whose loss is invisible until
+          # a user's first `Thread_CPU` call.
           for want in \
             share/isabelle-performant-ml/ROOT \
             share/isabelle-performant-ml/Performant_Isabelle_ML.thy \
             share/isabelle-performant-ml/HOL/SSymb.thy \
+            share/isabelle-performant-ml/library/native/arm64-darwin/libperformant_isabelle_ml.so \
+            share/isabelle-performant-ml/library/native/arm64-linux/libperformant_isabelle_ml.so \
+            share/isabelle-performant-ml/library/native/x86_64-darwin/libperformant_isabelle_ml.so \
+            share/isabelle-performant-ml/library/native/x86_64-linux/libperformant_isabelle_ml.so \
+            share/isabelle-performant-ml/library/native/x86_64-windows/performant_isabelle_ml.dll \
             bin/.isabelle-performant-ml-post-link.sh \
             bin/.isabelle-performant-ml-pre-unlink.sh \
             Scripts/.isabelle-performant-ml-post-link.bat \
@@ -213,6 +439,32 @@ jobs:
           set -euo pipefail
           conda activate v
           isabelle build -v Performant_Isabelle_ML Performant_Isabelle_HOL
+
+      # Building the session proves nothing about the native library: thread_cpu.ML
+      # loads it lazily (Foreign.loadLibraryIndirect), so the path is never resolved
+      # until a Thread_CPU call.  This is the one step in the pipeline that makes such
+      # a call against the INSTALLED component, i.e. the one that checks the identity
+      # everything else assumes -- the directory CI wrote is the one ML looks in.  The
+      # import is session-qualified: a bare name would make Isabelle look for a local
+      # .thy of that name.
+      - name: "...and the shipped native library loads from ML"
+        run: |
+          set -euo pipefail
+          conda activate v
+          chk="$RUNNER_TEMP/chk"; mkdir -p "$chk"
+          printf '%s\n' 'session Check_Native = Performant_Isabelle_ML + theories Check_Native' > "$chk/ROOT"
+          printf '%s\n' \
+            'theory Check_Native' \
+            '  imports "Performant_Isabelle_ML.Performant_Isabelle_ML"' \
+            'begin' \
+            'ML \<open>' \
+            '  val clock = Thread_CPU.self ();' \
+            '  val t = (case Thread_CPU.read clock of SOME t => t | NONE => error "own clock unreadable");' \
+            '  val _ = Thread_CPU.free clock;' \
+            '  val _ = writeln ("thread CPU read from the shipped library: " ^ Time.toString t)' \
+            '\<close>' \
+            'end' > "$chk/Check_Native.thy"
+          isabelle build -d "$chk" -v Check_Native
 
   publish:
     needs: verify

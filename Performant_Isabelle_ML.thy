@@ -2,8 +2,17 @@ theory Performant_Isabelle_ML
   imports Pure
 begin
 
-(* First: from here on, Timeout.apply is the accounted version (see the file). *)
+(* First: Poly/ML's Foreign is bound again in the global ML name space (see the file).
+   Its own compilation unit, ahead of every ML that names Foreign. *)
+ML_file \<open>library/rescue_foreign.ML\<close>
+
+(* From here on, Timeout.apply is the accounted version (see the file). *)
 ML_file \<open>library/accounted_timeout.ML\<close>
+
+(* Per-thread CPU clocks and Thread_CPU.apply, a timeout charged in them; needs
+   Foreign (above), Interrupt_Family (accounted_timeout.ML) and the native
+   library (library/native/build <platform>, once per machine). *)
+ML_file \<open>library/thread_cpu.ML\<close>
 
 ML_file \<open>library/improved_net.ML\<close>
 ML_file \<open>library/inet_collection.ML\<close>

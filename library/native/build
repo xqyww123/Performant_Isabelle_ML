@@ -1,0 +1,115 @@
+#!/bin/bash
+#
+# Build libperformant_isabelle_ml, the native half of Performant_Isabelle_ML,
+# for one target platform, into ./<target>/.  Mirrors Isabelle's own
+# contrib/polyml-*/sha1/build.  The target names are Poly/ML's ML_PLATFORM
+# values with any compact-object "_32" stripped from the architecture;
+# library/thread_cpu.ML computes exactly that name to find the library.
+#
+# The library is linked into a staging file, checked there -- by the self-test
+# where it can run, statically on x86_64-windows (see the branch below) -- and
+# moved into place only if the check passes: a failed build leaves the
+# installed library unchanged.  CC and LD may be given in the environment for a
+# cross build; on the targets that run the self-test it then cannot run on the
+# host and the build fails loudly, which is the intended answer.
+
+function usage()
+{
+  echo
+  echo "Usage: $(basename "$0") TARGET"
+  echo
+  echo "  Supported targets are:"
+  echo
+  echo "    arm64-darwin"
+  echo "    arm64-linux"
+  echo "    x86_64-darwin"
+  echo "    x86_64-linux"
+  echo "    x86_64-windows"
+  echo
+  exit 1
+}
+
+[ "$#" -eq 0 ] && { echo "Error: missing target."; usage; }
+
+cd "$(dirname "$0")" || exit 1
+
+target="$1"
+sources="thread_cpu.c"
+library="$target/libperformant_isabelle_ml.so"
+staged="libperformant_isabelle_ml.staged"
+test_bin="test_thread_cpu"
+
+CC="${CC:-gcc}"
+LD="${LD:-$CC}"
+CFLAGS="-O2 -fPIC -I."
+LDFLAGS="-fPIC -shared"
+TESTLIBS="-ldl -lpthread"
+
+case "$target" in
+  arm64-darwin | x86_64-darwin)
+    TESTLIBS="-lpthread"
+    # The minimum macOS stamped on the library.  Without it the runner image's
+    # own version is stamped and drifts with GitHub's images.  11.0 is the
+    # oldest the four Mach calls could need; measured only on 14 (arm64) and
+    # 15 (Intel), see ../../archive/THREAD_CPU_MEASUREMENTS.md.
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+    ;;
+  arm64-linux | x86_64-linux)
+    ;;
+  x86_64-windows)
+    PATH="/mingw64/bin:$PATH"
+    CFLAGS="-O2 -I. -m64"
+    LDFLAGS="-shared"
+    library="$target/performant_isabelle_ml.dll"
+    staged="performant_isabelle_ml.staged.dll"
+    ;;
+  *)
+    echo "Error: unsupported target: '$target'"
+    usage
+    ;;
+esac
+
+objects=""
+for src in $sources; do objects="$objects ${src%.c}.o"; done
+
+# One cleanup path for every exit: nothing but the installed library may be
+# left behind, and the final mv leaves the trap nothing to find.  The signal
+# traps arm exit rather than clean up -- a handler that returns would resume
+# the script -- so the EXIT trap stays the only place that removes anything.
+trap 'rm -f "$staged" "$test_bin" $objects' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+echo "Compiling ..."
+for src in $sources; do
+  $CC $CFLAGS -c -o "${src%.c}.o" "$src" || exit 1
+done
+
+echo "Linking ..."
+$LD $LDFLAGS -o "$staged" $objects || exit 1
+
+if [ "$target" != x86_64-windows ]; then
+  echo "Building the self-test ..."
+  $CC $CFLAGS -o "$test_bin" test_thread_cpu.c $TESTLIBS || exit 1
+
+  echo "Running the self-test ..."
+  "./$test_bin" "./$staged" || { echo "Self-test failed; $library left unchanged."; exit 1; }
+else
+  # The self-test is POSIX (dlopen, pthreads) and does not run here, so the staged
+  # DLL is checked statically instead: a 64-bit PE that exports the three entry
+  # points.  A DLL that loads but exports nothing would otherwise fail at a user's
+  # first Thread_CPU call, in the error library/thread_cpu.ML raises when the library
+  # cannot be loaded -- sending them to rebuild a library that is present.
+  echo "No dlopen self-test on this target; checking the linked file statically ..."
+  objdump -f "$staged" | grep -q 'pei-x86-64' \
+    || { echo "$staged is not a 64-bit PE"; objdump -f "$staged"; exit 1; }
+  for sym in tc_self tc_read tc_free; do
+    objdump -p "$staged" | grep -qw "$sym" \
+      || { echo "$staged does not export $sym"; objdump -p "$staged" | grep -A40 'Export Table'; exit 1; }
+  done
+  echo "  OK  64-bit PE, tc_self/tc_read/tc_free exported"
+fi
+
+mkdir -p "$target"
+mv -f "$staged" "$library" || exit 1
+echo "Built $library"
