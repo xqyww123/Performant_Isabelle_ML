@@ -10,3 +10,7 @@ library/native/*/
 library/native/*.o
 library/native/*.staged*
 library/native/test_thread_cpu
+
+# one-off Merely_Rewrite probes, moved out of the package root on 2026-09-07; never tracked again
+ai-artifacts/Skel_*.thy
+ai-artifacts/ScratchFamProbe.thy
