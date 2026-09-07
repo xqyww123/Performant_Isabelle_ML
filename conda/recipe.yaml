@@ -90,8 +90,8 @@ build:
       # This check is the reason a binary-less package cannot exist.  Everything that
       # could drop them -- `use_gitignore` reverting to its default, a renamed target,
       # a `native` leg quietly removed from the matrix -- fails here instead of
-      # surfacing at a user's first Thread_CPU call as an error telling them to build
-      # a library the package already ships.
+      # surfacing at a user's first Thread_CPU call as a missing clock and advice to
+      # build a library the package already ships.
       #
       # The target names are Poly/ML's ML_PLATFORM with any compact-object "_32"
       # stripped from the architecture; library/thread_cpu.ML computes exactly this

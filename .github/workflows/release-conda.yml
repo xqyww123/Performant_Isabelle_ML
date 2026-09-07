@@ -337,8 +337,9 @@ jobs:
           # recipe proves they reached $PREFIX, this proves they survived into the
           # shipped payload.  They are gitignored, so the recipe carries
           # `use_gitignore: false` to get them past rattler-build's source copy at all --
-          # a setting that is easy to lose in an edit and whose loss is invisible until
-          # a user's first `Thread_CPU` call.
+          # a setting that is easy to lose in an edit, and whose loss a user's first
+          # `Thread_CPU` call need not report at all: without the library the clock
+          # is simply absent.
           for want in \
             share/isabelle-performant-ml/ROOT \
             share/isabelle-performant-ml/Performant_Isabelle_ML.thy \
@@ -458,7 +459,7 @@ jobs:
             '  imports "Performant_Isabelle_ML.Performant_Isabelle_ML"' \
             'begin' \
             'ML \<open>' \
-            '  val clock = Thread_CPU.self ();' \
+            '  val clock = Thread_CPU.the_self ();' \
             '  val t = (case Thread_CPU.read clock of SOME t => t | NONE => error "own clock unreadable");' \
             '  val _ = Thread_CPU.free clock;' \
             '  val _ = writeln ("thread CPU read from the shipped library: " ^ Time.toString t)' \

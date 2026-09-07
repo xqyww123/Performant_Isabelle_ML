@@ -25,13 +25,13 @@ platform, so a single artifact is correct everywhere (Isabelle ships its own
 libsha1.so the same way).  Getting them past rattler-build's source copy needs
 `use_gitignore: false` in conda/recipe.yaml, since .gitignore hides exactly
 these directories; the recipe asserts all five are present, so a package cannot
-build green without them.  A missing library shows up at first use as an error
-naming this build command; so does a library that will not load -- the prebuilt
-Linux ones require glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9),
-because pthread_getcpuclockid moved into libc at that version, and the macOS
-ones are stamped for macOS 11.0 or newer but were measured only on 14 and 15.
-On an older system ./build TARGET produces a local copy with no such
-requirement.
+build green without them.  A missing library, or one that will not load,
+leaves Thread_CPU without a clock (library/thread_cpu.ML, WITHOUT A CLOCK);
+the reason it reports names this build command.  The prebuilt Linux libraries
+require glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9), where
+pthread_getcpuclockid moved into libc; the macOS ones are stamped for macOS
+11.0 or newer but were measured only on 14 and 15.  On an older system
+./build TARGET produces a local copy with no such requirement.
 
 What has actually been measured, per platform, is recorded in
 ../../ai-artifacts/THREAD_CPU_MEASUREMENTS.md; the header of each .c file states the

@@ -9,9 +9,11 @@ ML_file \<open>library/rescue_foreign.ML\<close>
 (* From here on, Timeout.apply is the accounted version (see the file). *)
 ML_file \<open>library/accounted_timeout.ML\<close>
 
-(* Per-thread CPU clocks and Thread_CPU.apply, a timeout charged in them; needs
-   Foreign (above), Interrupt_Family (accounted_timeout.ML) and the native
-   library (library/native/build <platform>, once per machine). *)
+(* Per-thread CPU clocks, a measurement in them, and Thread_CPU.apply, a
+   timeout charged in them; needs Foreign (above) and Interrupt_Family
+   (accounted_timeout.ML).  The native library (library/native/build
+   <platform>, once per machine) is loaded lazily and optional: without it
+   there is no clock. *)
 ML_file \<open>library/thread_cpu.ML\<close>
 
 ML_file \<open>library/improved_net.ML\<close>

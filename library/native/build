@@ -97,9 +97,10 @@ if [ "$target" != x86_64-windows ]; then
 else
   # The self-test is POSIX (dlopen, pthreads) and does not run here, so the staged
   # DLL is checked statically instead: a 64-bit PE that exports the three entry
-  # points.  A DLL that loads but exports nothing would otherwise fail at a user's
-  # first Thread_CPU call, in the error library/thread_cpu.ML raises when the library
-  # cannot be loaded -- sending them to rebuild a library that is present.
+  # points.  A DLL that loads but exports nothing would otherwise leave the thread
+  # with no CPU clock at all -- Thread_CPU.self NONE, a measurement reporting no
+  # thread CPU, apply falling back to its wall-clock limit -- on a machine whose
+  # library is present.
   echo "No dlopen self-test on this target; checking the linked file statically ..."
   objdump -f "$staged" | grep -q 'pei-x86-64' \
     || { echo "$staged is not a 64-bit PE"; objdump -f "$staged"; exit 1; }
