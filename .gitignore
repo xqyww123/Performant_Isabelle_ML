@@ -14,3 +14,5 @@ library/native/test_thread_cpu
 # one-off Merely_Rewrite probes, moved out of the package root on 2026-09-07; never tracked again
 ai-artifacts/Skel_*.thy
 ai-artifacts/ScratchFamProbe.thy
+ai-artifacts/INTERRUPT_BREAKDOWN_PLAN.md
+ai-artifacts/UPSTREAM_INTERRUPT_BREAKDOWN_REPORT.md

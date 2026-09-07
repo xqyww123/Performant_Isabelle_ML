@@ -58,7 +58,7 @@ jobs:
   # file is a 64-bit PE whose export table names the three entry points -- not that it
   # loads, and not that it returns correct times; nothing in this workflow loads the
   # Windows DLL.  Windows behaviour is covered by the measurements in
-  # archive/THREAD_CPU_MEASUREMENTS.md.
+  # ai-artifacts/THREAD_CPU_MEASUREMENTS.md.
   #
   # TARGET is Poly/ML's ML_PLATFORM with any compact-object "_32" stripped from the
   # architecture, which is precisely the directory name library/thread_cpu.ML computes

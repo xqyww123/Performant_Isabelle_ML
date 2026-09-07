@@ -51,7 +51,7 @@ case "$target" in
     # The minimum macOS stamped on the library.  Without it the runner image's
     # own version is stamped and drifts with GitHub's images.  11.0 is the
     # oldest the four Mach calls could need; measured only on 14 (arm64) and
-    # 15 (Intel), see ../../archive/THREAD_CPU_MEASUREMENTS.md.
+    # 15 (Intel), see ../../ai-artifacts/THREAD_CPU_MEASUREMENTS.md.
     export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
     ;;
   arm64-linux | x86_64-linux)

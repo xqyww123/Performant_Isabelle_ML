@@ -2,7 +2,6 @@
     Author: Qiyuan Xu (with AI assistance)
 
 Timeout.apply that claims the Exn.Interrupt_Breakdown its own timer caused.
-Design, evidence, and all rulings: INTERRUPT_BREAKDOWN_PLAN.md.
 
 THE DEFECT (Isabelle2025-2; Pure is NOT patched).  A thread interrupt is a
 Poly/ML request plus a per-thread "break" flag saying "this one is ours"
@@ -34,7 +33,7 @@ Performant_Isabelle_ML that writes Timeout.apply gets the accounted version;
 Accounted_Timeout.raw_apply / raw_apply_physical are the greppable escape to
 the original.  The signature stays TIMEOUT verbatim.
 
-RESIDUALS (PLAN 4.2, accepted): a Breakdown landing after Timeout.apply has
+RESIDUALS (accepted): a Breakdown landing after Timeout.apply has
 returned is out of reach; when nested timers both fire the inner claims and
 the outer request is consumed (Timeout.apply's own semantics, timeout.ML:54);
 a genuine resource failure AFTER the witness fired is reported as TIMEOUT.
@@ -88,16 +87,10 @@ sig
   val raw_apply_physical: Time.time -> ('a -> 'b) -> 'a -> 'b
   val apply: Time.time -> ('a -> 'b) -> 'a -> 'b
   val apply_physical: Time.time -> ('a -> 'b) -> 'a -> 'b
-  (*TEMPORARY (PLAN 6.2, R3): verification-period record of every claim,
-    installed by library/accounted_timeout_probe.ML; deleted with it*)
-  val claim_probe:
-    ({physical: bool, timeout: Time.time, elapsed: Time.time, exn: exn} -> unit) Unsynchronized.ref
 end
 
 structure Accounted_Timeout: ACCOUNTED_TIMEOUT =
 struct
-
-val claim_probe = Unsynchronized.ref (fn _ => ())
 
 (*bound before the shadow below: the originals*)
 val raw_apply = Timeout.apply
@@ -134,10 +127,7 @@ fun apply' physical timeout f x =
         | Exn.Exn exn =>
             if fired andalso Interrupt_Family.all_breakdown exn
             then
-              let val elapsed = Time.now () - start in
-                ! claim_probe {physical = physical, timeout = timeout, elapsed = elapsed, exn = exn};
-                raise Timeout.TIMEOUT elapsed
-              end
+              raise Timeout.TIMEOUT (Time.now () - start)
             else Exn.reraise exn)
       end)
 

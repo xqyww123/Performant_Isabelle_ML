@@ -34,10 +34,10 @@ On an older system ./build TARGET produces a local copy with no such
 requirement.
 
 What has actually been measured, per platform, is recorded in
-../../archive/THREAD_CPU_MEASUREMENTS.md; the header of each .c file states the
+../../ai-artifacts/THREAD_CPU_MEASUREMENTS.md; the header of each .c file states the
 contract that follows from it.  The self-test re-measures the part of it that
 a build can regress -- accuracy, a sleeping thread, a cross-thread read, the
 handle after the thread has ended, and (asserted on macOS) that a held handle
 is not reissued to new threads -- on every build except x86_64-windows, where
 nothing executes the library before it ships; Windows behaviour rests on the
-measurements in ../../archive/THREAD_CPU_MEASUREMENTS.md section 4 instead.
+measurements in ../../ai-artifacts/THREAD_CPU_MEASUREMENTS.md section 4 instead.

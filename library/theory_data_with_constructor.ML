@@ -5,7 +5,7 @@
   data (single parent: whole table verbatim; several parents, one carrier:
   entry verbatim; see Pure/context.ML merge_data).
 
-  Contract (details in THEORY_DATA_WITH_CONSTRUCTOR_PLAN.md):
+  Contract (details in ai-artifacts/THEORY_DATA_WITH_CONSTRUCTOR_PLAN.md):
   - `construct` is called exactly once per begin, with Theory.parents_of and
     their values, in that order; an out-of-scope parent contributes `empty`.
     It is never called with []; out-of-scope theories read `empty`.

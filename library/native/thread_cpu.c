@@ -27,7 +27,7 @@
 
     Per-platform contract.  Every figure is measured (Linux locally and on a
     GitHub runner; macOS arm64 and Intel, and Windows, on GitHub runners); the
-    numbers and the probe are in archive/THREAD_CPU_MEASUREMENTS.md.
+    numbers and the probe are in ai-artifacts/THREAD_CPU_MEASUREMENTS.md.
 
       Linux    clockid from pthread_getcpuclockid; nanosecond resolution.  Once
                the thread is gone clock_gettime fails (EINVAL) and tc_read is

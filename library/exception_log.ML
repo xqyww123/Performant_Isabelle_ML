@@ -2,7 +2,7 @@
     Author: Qiyuan Xu (with AI assistance)
 
 The exception category of Event_Log: structured exception records with frame
-lists.  Design and all rulings: EVENT_LOG_PLAN.md (PLAN below).
+lists.  Design and all rulings: ai-artifacts/EVENT_LOG_PLAN.md (PLAN below).
 
 The only working frame-trace mechanism is Exn_Debugger.capture_exception_trace
 (Poly/ML's traceException is a no-op); its trace_var is a single-slot

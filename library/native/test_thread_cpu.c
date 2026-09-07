@@ -11,7 +11,7 @@
       5. the dead thread's handle is not reissued to new threads while it is
          still held -- on macOS that is what the send right buys, and the
          probe reads the stale handle WHILE each new thread lives, because
-         afterwards it reads -1 either way (archive/THREAD_CPU_MEASUREMENTS.md).
+         afterwards it reads -1 either way (ai-artifacts/THREAD_CPU_MEASUREMENTS.md).
     Every burn runs until the CLOCK UNDER TEST has advanced by a fixed amount,
     with a wall-clock backstop, so a loaded machine slows the test down instead
     of failing it; a clock that never advances trips the backstop.

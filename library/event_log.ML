@@ -5,7 +5,7 @@ Persistent event log: one pen shared by the whole Isabelle/ML dependency chain
 (Performant_Isabelle_ML -> Auto_Sledgehammer -> Isa-Mini -> phi-system).  Any
 code appends a categorized, timestamped record to an XML file on disk; a write
 never raises and never changes the result of a proof.  Design and all rulings:
-EVENT_LOG_PLAN.md.
+ai-artifacts/EVENT_LOG_PLAN.md.
 
 File format (PLAN 5): one record = one top-level <record> element, serialized
 by XML.string_of (which never emits newlines by itself, so newlines come only

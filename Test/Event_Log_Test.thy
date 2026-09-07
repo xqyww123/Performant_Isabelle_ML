@@ -3,7 +3,7 @@ theory Event_Log_Test
 begin
 
 text \<open>
-  Unit test for Event_Log / Exception_Log (EVENT_LOG_PLAN.md, section 10.2).
+  Unit test for Event_Log / Exception_Log (ai-artifacts/EVENT_LOG_PLAN.md, section 10.2).
 
   The theory writes records that stress the record-boundary transform, the
   control-character filter, the comment sanitizer, and the frame capture; it

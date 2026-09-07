@@ -1,6 +1,6 @@
 (*
   Tests for Theory_Data_With_Constructor, following the numbering of
-  THEORY_DATA_WITH_CONSTRUCTOR_PLAN.md §5.
+  ai-artifacts/THEORY_DATA_WITH_CONSTRUCTOR_PLAN.md §5.
 
   The instance's value is a string spelling out the whole construction:
   construct [(p1, v1), (p2, v2)] = "C(p1=v1, p2=v2)" (base names).  Every

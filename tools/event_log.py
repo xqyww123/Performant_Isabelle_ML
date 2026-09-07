@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference reader for Event_Log files (EVENT_LOG_PLAN.md, section 8).
+"""Reference reader for Event_Log files (ai-artifacts/EVENT_LOG_PLAN.md, section 8).
 
 A log file is a sequence of top-level items -- <record> elements and
 <!-- ... --> comments -- and the writer guarantees that a line's first byte

@@ -9,7 +9,7 @@ running beside other workers cannot be metered by it, and wall clock charges
 it for the machine's load and for everybody's garbage collections: Poly/ML's
 GC stops the world, and a thread that allocated nothing lost 657 ms of 910 ms
 wall to other threads' GCs, none of it on its own CPU clock (measured;
-archive/THREAD_CPU_MEASUREMENTS.md holds every figure cited here).  The
+ai-artifacts/THREAD_CPU_MEASUREMENTS.md holds every figure cited here).  The
 operating system keeps a CPU clock per thread; this module reads it.
 
 THE MECHANISM.  library/native/thread_cpu.c, three C entry points that are
@@ -89,7 +89,7 @@ sig
      once the system reissues that name a read reports the new owner's total;
      the macOS send right and the Windows handle hold the name until `free',
      on Linux nothing does.  All of this is measured
-     (archive/THREAD_CPU_MEASUREMENTS.md).
+     (ai-artifacts/THREAD_CPU_MEASUREMENTS.md).
 
      Resolution: nanoseconds on Linux, microseconds on macOS, and on Windows
      the 15.625 ms scheduler tick -- a Windows budget is meaningful only in
