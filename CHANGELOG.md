@@ -7,6 +7,8 @@
   the calling thread's CPU with an optional wall-clock limit for liveness
   (`library/thread_cpu.ML`).
 - Poly/ML's `Foreign` is bound again below this session.
+- `Dynamic_Array`: mutable growable arrays with stack, middle insert/delete,
+  stable in-place sort and binary search (`library/dynamic_array.ML`).
 - The conda package now ships the native library `libperformant_isabelle_ml`
   prebuilt for x86_64-linux, arm64-linux, x86_64-darwin, arm64-darwin and
   x86_64-windows.  **The Linux builds require glibc 2.34 or newer** (Ubuntu

@@ -9,6 +9,8 @@ description: Use performant Isabelle/ML data structures and concurrency utilitie
 
 - **Hash table** (`Inthashtab`, `Strhashtab`) instead of `Inttab`/`Symtab` for mutable, performant lookups: `library/hash_table.ML`
   - Warning: these are mutable. Do not use them when a stateless functional structure is needed — use `Inttab`/`Symtab` in that case.
+- **Dynamic array** (`Dynamic_Array`): a mutable growable array — amortised O(1) `push`/`pop`, indexed `sub`/`update` one comparison slower than `Array.sub`, O(n) `insert`/`delete` in the middle, in-place stable `sort` (through one buffer of n slots), `binary_search`/`lower_bound`/`upper_bound`/`insert_sorted` on a sorted array, and the usual `fold`/`app`/`exists`/`dest`/`to_array` traversals: `library/dynamic_array.ML`
+  - Warning: mutable and not thread-safe, like the hash tables. Storage is only ever released by `shrink_to_fit` (a drained array keeps it and refills without allocating); a slot past the length may keep one former element reachable until it is reused.
 - **Improved discrimination net** (`iNet`) instead of `Net` for term indexing with lambda abstraction support: `library/improved_net.ML`
 - **Race engine** (`Race`) instead of `Par_List.get_some` for racing alternative computations — the winner is the lowest-indexed racer that recorded a claim, the first claim to arrive ends the race, losers are cancelled promptly, every racer gets a truthful exit, and all racers have terminated before the race returns: `library/race.ML`
   - Warning: racer bodies must be self-bounded (wrap each in its own `Timeout.apply`) — on the no-winner path the race joins every racer, so one unbounded racer blocks the whole call.
