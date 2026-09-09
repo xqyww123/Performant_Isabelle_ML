@@ -28,6 +28,11 @@ ML_file \<open>library/event_log.ML\<close>
 ML_file \<open>library/exception_log.ML\<close>
 ML_file \<open>library/race.ML\<close>
 
+(* Runtime symbols (Phi_Tool_Symbol): the ML half of HOL/SSymb.thy, here so that
+   serializers in Pure-based sessions (Isabelle_RPC) can carry a symbol by its
+   identifier instead of its per-process numeral. *)
+ML_file \<open>library/ssymb.ML\<close>
+
 (* MessagePack serialization library (mlmsgpack), relocated here from Isabelle_RPC
    so it is reachable by any session based on Performant_Isabelle_ML
    (e.g. Auto_Sledgehammer's proof cache). Load order matters:

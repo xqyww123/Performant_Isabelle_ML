@@ -174,14 +174,6 @@ type 'a racer = string * (unit -> 'a option)
 datatype 'a exit =
   Won | Gave_None | Timed_Out | Crashed of exn | Cancelled | Discarded of 'a
 
-(*breakdown attribution (EVENT_LOG_PLAN 7): the two branches below where an
-  interrupt LEAVES the race are record points -- a breakdown has no raise
-  position, so its diagnostic value is the first site that sees it; proper
-  cancellations are the engine working as designed and are not logged*)
-fun log_escaping site name =
-  Exception_Log.record_breakdown (site ^ " escaping, racer=" ^ name)
-
-
 (** serial mode: run in list order, stop at the first decisive result **)
 
 fun race_serial (racers: 'a racer list) =
@@ -197,8 +189,7 @@ fun race_serial (racers: 'a racer list) =
           | Exn.Exn (Timeout.TIMEOUT _) => go rest ((name, Timed_Out) :: exits)
           | Exn.Exn exn =>
               (if Interrupt_Family.contains_interrupt exn
-               then (log_escaping "Race.serial" name exn;
-                     Exn.reraise exn)
+               then Exn.reraise exn
                else go rest ((name, Crashed exn) :: exits)))
   in go racers [] end
 
@@ -260,7 +251,6 @@ fun race_forked (racers: 'a racer list) =
                   down, and re-raise.*)
                 (Synchronized.change state (apsnd (K true));
                  Future.cancel_group race_group;
-                 log_escaping "Race.parallel" name exn;
                  Exn.reraise exn)
               else
                 (*not our cancellation, not the caller's thread: provably the

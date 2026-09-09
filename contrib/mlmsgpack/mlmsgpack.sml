@@ -1,14 +1,11 @@
-functor MessagePack(S : sig
-                      type instream
-                      type outstream
-                      val input1 : instream -> (Word8.word * instream) option
-                      val inputN : instream * int -> Word8Vector.vector * instream
-                      val output : outstream * Word8Vector.vector -> unit
-                      val output1 : outstream * Word8.word -> unit
-                    end) :> sig
+(* The result signature of the MessagePack functor, named so that a codec can be
+   written once over any instantiation (BinIO, BytesIO, ...). *)
+signature MESSAGE_PACK = sig
+  type instream
+  type outstream
   structure Pack : sig
     exception Pack
-    type raw_packer = S.outstream -> unit
+    type raw_packer = outstream -> unit
     type 'a packer = 'a -> raw_packer
 
     val doPack : 'a packer -> 'a packer
@@ -57,11 +54,11 @@ functor MessagePack(S : sig
   end
   structure Unpack : sig
     exception Unpack
-    type 'a unpacker = S.instream -> 'a * S.instream
+    type 'a unpacker = instream -> 'a * instream
 
-    val doUnpack : 'a unpacker -> S.instream -> 'a * S.instream
+    val doUnpack : 'a unpacker -> instream -> 'a * instream
   
-    val fromFn : (S.instream -> 'a * S.instream) -> 'a unpacker
+    val fromFn : (instream -> 'a * instream) -> 'a unpacker
 
     val || : 'a unpacker * 'a unpacker -> 'a unpacker
     val >> : 'a unpacker * ('a -> 'b) -> 'b unpacker
@@ -103,7 +100,21 @@ functor MessagePack(S : sig
 
     val unpackOption : 'a unpacker -> 'a option unpacker
   end
-end = struct
+end
+
+functor MessagePack(S : sig
+                      type instream
+                      type outstream
+                      val input1 : instream -> (Word8.word * instream) option
+                      val inputN : instream * int -> Word8Vector.vector * instream
+                      val output : outstream * Word8Vector.vector -> unit
+                      val output1 : outstream * Word8.word -> unit
+                    end)
+  :> MESSAGE_PACK where type instream = S.instream and type outstream = S.outstream
+  = struct
+
+  type instream = S.instream
+  type outstream = S.outstream
 
   structure UintPrinterIntWord = UintPrinterIntWord(S)
   structure UintPrinterIntLargeWord = UintPrinterIntLargeWord(S)

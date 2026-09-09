@@ -95,7 +95,12 @@ lemma symbol_digit_eval:
                     D.rep_eq E.rep_eq F.rep_eq mk_symbol_inverse)
 
 ML_file \<open>../library/ssymb_syntax.ML\<close>
-ML_file \<open>../library/ssymb.ML\<close>
+
+text \<open>\<open>Phi_Tool_Symbol\<close> (library/ssymb.ML, loaded by the Pure half) names the constants
+  above as literal strings.  Certifying every constant it builds fails here, where the
+  constants are declared, if one is renamed or retyped.\<close>
+
+ML \<open>val _ = map (Thm.cterm_of \<^context>) Phi_Tool_Symbol.constants\<close>
 
 hide_const (open) Z A B C D E F
 

@@ -145,3 +145,7 @@ struct
   val apply = Accounted_Timeout.apply
   val apply_physical = Accounted_Timeout.apply_physical
 end
+
+(*TEMPORARY hunt marker (`exception Option`, 2026-09-03): forces this session to
+  rebuild so its ROOT ML_debugger option takes effect (a ROOT options change alone
+  does not enter the session digest).  Delete with the hunt.*)
