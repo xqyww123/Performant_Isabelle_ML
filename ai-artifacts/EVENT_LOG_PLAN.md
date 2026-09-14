@@ -104,7 +104,9 @@ fun capture {site, record} body =
 
 ## 5. 文件与记录格式
 
-一条记录 = 一个 `<record>` 元素，由 `XML.string_of` 输出后做**一次机械变换**再追加：对每个后面跟着"零或多个空格再一个 `<`"的换行符，在它后面**多插一个空格**；末尾补 `"\n"`。（**实施修正**：原稿写的是只把 `"\n<"` 换成 `"\n <"`——那会给前一个文本节点凭空多出一个尾空格，违背 §10.2 的"内容逐字往返"。现在的变换是**双射**：因为写端对"换行 + 空格* + `<`"的行**一律**加一个空格，读端只要对"换行 + 空格+ + `<`"的行删**恰好一个**空格就逐字还原。）因为文本与属性值里的 `<` 必被转义（`xml.ML:122`），行首（跳过空格后）的 `<` 只可能是标记边界；变换后"除首行外没有任何一行以 `<` 开头"是定理：读取方以"行首 `<`"切分永远安全。`comment` 的输出走同一次变换（其内容里的 `--` 被写端拆成 `"- -"`，注释非法串在语言层面写不出来）。`append` 同时过滤 `\t\n\r` 之外的控制字符，且**先过滤后变换**（删控制字节可能新造出"换行紧跟 `<`"）；编码器内的 `clean_output` 是第一道。
+一条记录 = 一个 `<record>` 元素，由 `XML.string_of` 输出；每个条目（记录或人写的注释）前先写一行边界标记 `<!-- record -->`，条目后补 `"\n"`。标记不可能出现在条目内部：文本与属性值里的 `<` 必被转义（`xml.ML:122`），注释体里的 `--` 被写端拆成 `"- -"`（注释非法串在语言层面写不出来），而标记含 `--`。读取方按标记切段即可，不需要任何字符变换。`append` 过滤 `\t\n\r` 之外的控制字符；编码器内的 `clean_output` 是第一道。
+
+（**修订 2026-09-14** [作者 "标记文本就用 `<!-- record -->`"]：原先的边界是一次字符变换——对"换行 + 空格* + `<`"的行补一个空格，使"除首行外没有任何一行以 `<` 开头"成为定理，读端再删一个空格还原。那是评审 agent 的方案，作者 2026-08-30 批准的设计里没有它，作者认为它"太黑"，改为明面上的注释标记。旧格式的日志文件由 `ai-artifacts/event_log_migrate.py` 一次性迁移。）
 
 ```
 <record category="exception" ts="2026-08-30T17:02:11.123" theory="Phi_Examples.Bucket_Hash"
@@ -150,7 +152,7 @@ fun capture {site, record} body =
 
 ## 8. 读取
 
-按"行首 `<`"切段，逐段先做 §5 变换的逆（对"换行 + 空格+ + `<`"的行删恰好一个空格）再 `xml.etree.ElementTree.fromstring`，坏段跳过，注释跳过；标量都在属性里，`pandas.DataFrame(r.attrib for r in records(path))` 即成表。参考实现 `Performant_Isabelle_ML/tools/event_log.py`（`records`/`chunks`/命令行 TSV 三个入口）。Isabelle/ML 侧读回：同样切分与逆变换 + `XML.parse`（格式内无数字字符引用，两侧对称）。
+按边界标记 `<!-- record -->` 切段，逐段 `xml.etree.ElementTree.fromstring`，坏段跳过，注释跳过；标量都在属性里，`pandas.DataFrame(r.attrib for r in records(path))` 即成表。参考实现 `Performant_Isabelle_ML/tools/event_log.py`（`records`/`chunks`/命令行 TSV 三个入口）。Isabelle/ML 侧读回：同样切分 + `XML.parse`（格式内无数字字符引用，两侧对称）。
 
 ## 9. 明确不做的
 

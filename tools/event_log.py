@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Reference reader for Event_Log files (ai-artifacts/EVENT_LOG_PLAN.md, section 8).
 
-A log file is a sequence of top-level items -- <record> elements and
-<!-- ... --> comments -- and the writer guarantees that a line's first byte
-is "<" exactly at the start of an item: it inserts one extra space after
-every newline that is followed by optional spaces and "<".  The reader
-splits on lines starting with "<", then deletes exactly one space after
-every newline followed by spaces and "<", restoring content byte-for-byte.
+A log file is a sequence of items -- <record> elements and <!-- ... -->
+comments -- each preceded by the marker line "<!-- record -->".  The marker
+cannot occur inside an item ("<" is escaped inside text and attribute values,
+and a comment body never contains "--"), so the reader splits the file at
+the marker and parses each piece on its own.
 
 One corrupt item loses only itself: every chunk is parsed independently and
 bad chunks are skipped (count them via the `bad` callback if you care).
@@ -19,21 +18,19 @@ Typical use:
 """
 
 import argparse
-import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-_BOUNDARY = re.compile(r"\n(?=<)")
-_UNSTUFF = re.compile(r"\n (?= *<)")
+RECORD_MARKER = "<!-- record -->"
 
 
 def chunks(text):
-    """Split a log file's text into per-item strings, unstuffed."""
-    for chunk in _BOUNDARY.split(text):
-        chunk = chunk.rstrip("\n")  # the trailing newline the writer appends
+    """Split a log file's text into per-item strings."""
+    for chunk in text.split(RECORD_MARKER):
+        chunk = chunk.strip("\n")
         if chunk:
-            yield _UNSTUFF.sub("\n", chunk)
+            yield chunk
 
 
 def records(path, bad=None):

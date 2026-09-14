@@ -5,7 +5,7 @@ begin
 text \<open>
   Unit test for Event_Log / Exception_Log (ai-artifacts/EVENT_LOG_PLAN.md, section 10.2).
 
-  The theory writes records that stress the record-boundary transform, the
+  The theory writes records that stress the record boundary, the
   control-character filter, the comment sanitizer, and the frame capture; it
   then injects one deliberately corrupt record and appends one more good one.
   The byte-for-byte round-trip and the skip-one-bad-record property are
@@ -23,7 +23,7 @@ ML \<open>
         error "Event_Log_Test must run with ISABELLE_EVENT_LOG_DIR set to a scratch directory")
 \<close>
 
-section \<open>Plain records, boundary transform, control characters, comment\<close>
+section \<open>Plain records, boundary, control characters, comment\<close>
 
 ML \<open>
   val test_category =
@@ -35,9 +35,8 @@ ML \<open>
     ([("k", "v1")], [Event_Log.elem_text "payload" "plain text"])
 
   (*2: boundary stress -- a text node ending in a newline right before an
-    element (the stuffing point), and content that already looks stuffed
-    (newline + space + escaped "<"), which the bijective transform must
-    return byte-for-byte*)
+    element, and content that looks like a marker line (newline + space +
+    escaped "<"), which must come back byte-for-byte*)
   val boundary_text = "line1\nline2\n"
   val tricky_text = " <not-a-tag\nend\n"
   val _ = Event_Log.append test_category
@@ -112,7 +111,7 @@ ML \<open>
     (case List.filter (String.isSuffix pid_suffix) (File.read_dir category_dir) of
       [name] => Path.append category_dir (Path.basic name)
     | names => error ("FAILED: expected exactly one log file, got: " ^ commas names))
-  val _ = File.append log_file "<record category=\"event_log_test\" broken=\"yes\">no close\n"
+  val _ = File.append log_file "<!-- record -->\n<record category=\"event_log_test\" broken=\"yes\">no close\n"
   val _ = Event_Log.append test_category ([("k", "v4")], [])
   val _ = writeln ("EVENT_LOG_TEST_FILE=" ^ Path.implode log_file)
 \<close>

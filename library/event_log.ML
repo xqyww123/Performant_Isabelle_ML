@@ -7,14 +7,12 @@ code appends a categorized, timestamped record to an XML file on disk; a write
 never raises and never changes the result of a proof.  Design and all rulings:
 ai-artifacts/EVENT_LOG_PLAN.md.
 
-File format (PLAN 5): one record = one top-level <record> element, serialized
-by XML.string_of (which never emits newlines by itself, so newlines come only
-from Text content), then made line-splittable by one mechanical transform: one
-extra space is inserted after every newline that is followed by optional
-spaces and "<".  Since "<" is always escaped inside text and attribute values,
-"no line but the first begins with <" becomes a theorem; and because the
-transform stuffs EVERY such line, the reader restores content byte-for-byte
-by deleting exactly one space after every newline followed by spaces and "<".
+File format (PLAN 5): a file is a sequence of items, each preceded by the
+comment line "<!-- record -->"; an item is one top-level <record> element
+serialized by XML.string_of, or a human-written comment.  A reader splits the
+file at the marker and parses each piece on its own, so a corrupt item loses
+only itself.  The marker cannot occur inside an item: "<" is escaped inside
+text and attribute values, and a comment body never contains "--".
 
 Configuration (PLAN 2.2): the single environment variable
 ISABELLE_EVENT_LOG_DIR.  Unset -> $ISABELLE_HOME_USER/event_log (default ON);
@@ -79,18 +77,8 @@ val filter_control =
     if Char.ord c >= 32 orelse c = #"\t" orelse c = #"\n" orelse c = #"\r"
     then str c else "")
 
-(*must run AFTER filter_control: deleting a control byte could create "\n<"*)
-fun stuff_boundaries s =
-  (case String.fields (fn c => c = #"\n") s of
-    [] => s
-  | line0 :: lines =>
-      let
-        fun starts_tag line =
-          Substring.isPrefix "<" (Substring.dropl (fn c => c = #" ") (Substring.full line))
-      in
-        String.concatWith "\n"
-          (line0 :: map (fn l => if starts_tag l then " " ^ l else l) lines)
-      end)
+(*the item boundary: written before every item, never inside one*)
+val record_marker = "<!-- record -->"
 
 
 (* record attributes filled by append (PLAN 4) *)
@@ -161,7 +149,7 @@ fun append_string (Category {name, enabled, state, ...}) make_string =
       else
         Thread_Attributes.uninterruptible_body (fn _ =>
           (case Exn.capture0 (fn () =>
-              let val s = stuff_boundaries (filter_control (make_string ())) ^ "\n" in
+              let val s = record_marker ^ "\n" ^ filter_control (make_string ()) ^ "\n" in
                 Synchronized.change state (fn memo =>
                   let
                     val pid = ML_Pid.get ()
@@ -196,30 +184,21 @@ fun comment cat text =
 
 (* reading back *)
 
-fun read_file path =
+(*the pieces between the markers, each without its surrounding newlines*)
+fun split_items s =
   let
-    fun starts_tag line =
-      Substring.isPrefix "<" (Substring.dropl (fn c => c = #" ") (Substring.full line))
-    fun unstuff line =
-      if String.isPrefix " " line andalso starts_tag line
-      then String.extract (line, 1, NONE) else line
-    (*group lines into items: an item begins at a line whose FIRST byte is "<"
-      (the boundary theorem of the writer); continuation lines are unstuffed*)
-    fun group ([], cur, items) = rev (rev cur :: items)
-      | group (line :: rest, cur, items) =
-          if String.isPrefix "<" line
-          then group (rest, [line], if null cur then items else rev cur :: items)
-          else group (rest, unstuff line :: cur, items)
-    fun trim_blank lines = rev (drop_prefix (fn l => l = "") (rev lines))
-    val items =
-      (case split_lines (File.read path) of
-        [] => []
-      | lines => group (drop_prefix (fn l => not (String.isPrefix "<" l)) lines, [], []))
-  in
-    items
-    |> map (String.concatWith "\n" o trim_blank)
-    |> map_filter (fn "" => NONE | item => try XML.parse item)
-  end
+    fun trim ss = ss |> Substring.dropl (fn c => c = #"\n") |> Substring.dropr (fn c => c = #"\n")
+    fun loop ss acc =
+      let val (piece, rest) = Substring.position record_marker ss
+          val acc' = Substring.string (trim piece) :: acc
+      in if Substring.isEmpty rest then rev acc'
+         else loop (Substring.triml (size record_marker) rest) acc'
+      end
+  in loop (Substring.full s) [] end
+
+fun read_file path =
+  split_items (File.read path)
+  |> map_filter (fn "" => NONE | item => try XML.parse item)
 
 
 (* encoder helpers *)
