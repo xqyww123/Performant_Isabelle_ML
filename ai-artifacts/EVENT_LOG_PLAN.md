@@ -1,6 +1,6 @@
 # Event_Log：Isabelle/ML 侧的持久事件日志
 
-**状态**：2026-08-30 终稿。初稿经两位评审两轮对抗评审，全部裁决（§2）已由作者定案。§10 第 1、2、3 步已实施并全部通过验证（2026-08-30：`Phi_System_Base` 与 `Phi_System` 整链在 `ML_debugger=true` 下构建通过；`Phi_Semantics_Framework` 构建期间三个类别写出首批真实记录——`guess_inst` 231 条、`guard_race` 111 条、`exception` 3 条 `Interrupt_Breakdown`（采集点 guard-racer R-conv，`size_heap`≈6.9GB/`time_GC`≈15s 同录），零坏记录；`Guard_Race_Smoke.thy` 全部探针对迁移后的 XML 读回逐字通过）；第 4 步经作者裁决跳过；第 5 步（探针删除）已完成；实施中被迫做出的修正已回写进本档（§2.4 建目录、§4 捕获器中断分支、§4 签名加 `log_dir` 与 `read_file`、§4 `record_breakdown` 助手、§5 边界变换改双射、§5 抛出点位置键），各处均带「实施修正」标记。
+**状态**：2026-08-30 终稿。初稿经两位评审两轮对抗评审，全部裁决（§2）已由作者定案。§10 第 1、2、3 步已实施并全部通过验证（2026-08-30：`Phi_System_Base` 与 `Phi_System` 整链在 `ML_debugger=true` 下构建通过；`Phi_Semantics_Framework` 构建期间三个类别写出首批真实记录——`guess_inst` 231 条、`guard_race` 111 条、`exception` 3 条 `Interrupt_Breakdown`（采集点 guard-racer R-conv，`size_heap`≈6.9GB/`time_GC`≈15s 同录），零坏记录；`Guard_Race_Smoke.thy` 全部探针对迁移后的 XML 读回逐字通过）；第 4 步经作者裁决跳过；第 5 步（探针删除）已完成；实施中被迫做出的修正已回写进本档（§2.4 建目录、§4 捕获器中断分支、§4 签名加 `log_dir` 与 `read_file`、§4 `record_breakdown` 助手、§5 边界变换改双射——2026-09-14 整个变换撤回，改为注释标记（§5 修订）、§5 抛出点位置键），各处均带「实施修正」标记。
 
 ## 0. 一句话
 
@@ -25,7 +25,7 @@
 2. 配置：**单一环境变量 `ISABELLE_EVENT_LOG_DIR`**。未设 → 默认 `$ISABELLE_HOME_USER/event_log`（**默认开启**）；设为空串 → 关闭。不用系统选项（`Performant_Isabelle_ML` 不是注册组件，其 `etc/options` 不会被读，`options.scala:257` 只扫组件目录），不用 `declare` 属性（上下文级旋钮改不了进程级事实，且对无 context 的 `append` 无效）。想要 Isabelle 原生入口的用户在某个已注册组件的 `etc/settings` 里 export 它。
 3. 频率责任交给类别：`exception` 类别默认开（单条 KB 量级、低频——`capture` 只在异常**逃出采集点**且过了 `record` 谓词时才写，被就地处理的异常零日志）；**高频类别各自带布尔开关、默认关**：新 Config `\<phi>log_guard_race`、`\<phi>log_guess_inst`（`Attrib.setup_config_bool`，默认 false，替代原路径配置），由调用点自查——这两处调用点都持有 ctxt，而 `category` 值里的 `enabled` 是进程级开关（无 ctxt 可用），上下文级开关属于调用点。不做轮转、不做清理。
 4. 文件布局：`<日志目录>/<category>/<启动时间>-<pid>.xml`；**路径在每次写入时按 `ML_Pid.get ()` 求值**——记忆化的是 `(pid, 路径)` 对，pid 与记忆不符（本进程是继承堆的子会话）就以当前时间与当前 pid 重算，"启动时间"因此实为**本进程首次写入的时间**。这样做是因为会话堆镜像会把初始化期算好的路径连同持有它的 `Synchronized.var` 一起传给并行的子会话进程（`ml_heap.ML:35-36`）。目录由纯 ML 的递归 mkdir 保证存在（**实施修正**：原稿写 `Isabelle_System.make_directory`，但它走 Scala 桥，裸 ML 进程（如 `isabelle console`）没有 Scala——日志器不得依赖它；实测正是在裸进程里失效后改的）。文件无 `<?xml?>` 头、无根元素、无首行注释。
-5. 格式：**XML，一条记录一个顶层元素，可跨多行**。记录边界"除首行外没有任何一行以 `<` 开头"由一次机械变换保证（§5），是定理不是纪律。不用 JSONL（Isabelle/ML 没有 JSON 编码器，Pure 只有 `json.scala`）；不用 MessagePack（中途损坏无法重同步；`mlmsgpack` 虽已在本 session 加载，此理由独立成立）；不用 YXML（Python 侧无解码器、不可 grep，而读取端就是 Python 和人）。
+5. 格式：**XML，一条记录一个顶层元素，可跨多行**。记录边界是每个条目前的一行注释标记 `<!-- record -->`（§5；2026-09-14 修订——原文"由一次机械变换保证……是定理不是纪律"描述的是评审 agent 的补空格方案，已撤回）。不用 JSONL（Isabelle/ML 没有 JSON 编码器，Pure 只有 `json.scala`）；不用 MessagePack（中途损坏无法重同步；`mlmsgpack` 虽已在本 session 加载，此理由独立成立）；不用 YXML（Python 侧无解码器、不可 grep，而读取端就是 Python 和人）。
 6. 现有探针：`\<phi>guard_race_log`、`\<phi>guess_inst_probe` 并入为类别 `guard_race`、`guess_inst`（路径配置删除、换成各自开关）；`guard_race` 的 `.goals` 伴生文件（`reasoners.ML:1466`，靠 serial 相连）**合并进同一条记录**、serial 列删除——多行内容在 TSV 里要外键另开文件，在 XML 记录里就是子元素，这正是迁移的收益样板。`breakdown_probe.ML` 与 `proof_store_probe.log` 两个临时探针：其调用点先改接 `Exception_Log`（见 §7 的记录点），**替换完成后**才删文件。
 7. 帧列表**保留为第一等信息**（作者裁决：debug 就是为了定位问题；成本只在 `ML_debugger` 编译的代码上存在，见 §3）。采集点与记录点的完整清单在 §7，其中 `Phi_Reasoner.reason`/`reason1` **列入采集点**（作者裁决，成本分析见 §7）；Minilang 的 `timed_OPR` **不加**（作者裁决）。
 8. `ML_debugger` 范围暂不扩大：现状只有 PLPR 开（`PLPR.thy:65`）。**待办（作者定开关形式）**：该 declare 目前是无条件的，任何源码构建都会 debug 编译 PLPR；要让"发行构建不开 debug"成真，需把它改为受开关控制。
@@ -59,7 +59,7 @@ end
 
 - `category` 是**纯值构造器**：不查表、不注册、不幂等。每个类别在拥有它的结构顶层 `val` 声明一次——重复注册在语言层面不存在，幻影类型参数 `'a` 永远诚实（评审阻断 8 的修法）。`enabled` 是该类别的**进程级**开关（`exception` 恒真）；上下文级开关（如 `\<phi>log_guard_race`）由持有 ctxt 的调用点自查后才 `append`，见 §2.3。
 - `append`：日志目录为空或 `enabled ()` 为假时是 no-op。写入纪律见 §6。记录属性统一填：`category`、`ts`（ISO 8601 毫秒）、`theory`（从线程局部 `Context.get_generic_context ()` 取，`context.ML:102/708`，取不到则省略）、`Position.properties_of (Position.thread_data ())` 摊开的标准位置键（`line`/`file`/…，`markup.ML:435`）、`thread`（`Isabelle_Thread.print`）、`task`（`Future.worker_task` 及 group）。
-- `comment`：把人写的固定文本以 `<!-- … -->` 追加到该类别文件；内容过 §5 的同一次边界变换；只用于人写的固定标记（不含 `--`），程序生成的说明做成记录。
+- `comment`：把人写的固定文本以 `<!-- … -->` 追加到该类别文件，前面同样写一行边界标记（§5）；内容里的 `--` 被拆开；只用于人写的固定标记，程序生成的说明做成记录。
 - 编码器辅助（普通函数，不是子结构）：标量字段直接进 `Properties.T`（无需组合子）；长内容三个助手——`elem_pretty : string -> Pretty.T -> XML.tree`、`elem_text : string -> string -> XML.tree`、`elem_list : string -> ('a -> XML.tree) -> 'a list -> XML.tree`。项只写可读打印（`Syntax.string_of_term` 过 `Protocol_Message.clean_output`，`protocol_message.ML:13/44`——不要重抄 `RPC_Pretty.trim_markup`，`Isabelle_RPC` 在上层够不着）；不写 `Term_XML`（计划稿写的 `Encode.term` 需要同 theory 的 `Consts.T` 才能解码，Python 侧无解码器；将来需要可回读的项时用 `term_raw` 另案）。**约束**：任何可能含换行的字段只准进子元素、不准进属性（`XML.parse` 与 expat 对属性值换行的处理不同，两侧读回会不一致）。
 
 ```sml
@@ -109,6 +109,7 @@ fun capture {site, record} body =
 （**修订 2026-09-14** [作者 "标记文本就用 `<!-- record -->`"]：原先的边界是一次字符变换——对"换行 + 空格* + `<`"的行补一个空格，使"除首行外没有任何一行以 `<` 开头"成为定理，读端再删一个空格还原。那是评审 agent 的方案，作者 2026-08-30 批准的设计里没有它，作者认为它"太黑"，改为明面上的注释标记。旧格式的日志文件由 `ai-artifacts/event_log_migrate.py` 一次性迁移。）
 
 ```
+<!-- record -->
 <record category="exception" ts="2026-08-30T17:02:11.123" theory="Phi_Examples.Bucket_Hash"
  line="191" file="…" thread="worker 7" task="…"
  site="guard-racer P-auto" exn="ERROR" raised_line="…" raised_file="…"
@@ -116,7 +117,7 @@ fun capture {site, record} body =
  <trace total="187391" compressed="14" written="14"><frame fn="Merely_Rewrite.go'" file="…" line="…" repeat="187342"/>…</trace></record>
 ```
 
-（换行位置由上述变换与编码器的 `Text` 内容自然决定，示例仅示意字段；续行的行首空格正是 §5 那次变换的产物。）标量一律进属性，`message`/`trace`/`goal` 等长内容进子元素；`Par_Exn` 容器拆开逐个 `<exn …/>`。抛出点位置是 `Position.properties_of` 的标准键机械加 `raised_` 前缀（**实施修正**：原稿只列 `raised_line`/`raised_file`，但 PIDE 编译的代码位置是 offset 制、没有行号，实测 `raised_line` 拿不到而 `raised_offset` 有——机械前缀两种环境都覆盖）。注意：`Interrupt_Breakdown` 与 proper 中断的记录**没有 `<trace>` 子元素**（§3：中断族拿不到帧），它们的信息就是记录属性 + `<message>`。
+（`XML.string_of` 本身不产生换行，换行只来自编码器的 `Text` 内容；示例为了可读手工折了行，仅示意字段。）标量一律进属性，`message`/`trace`/`goal` 等长内容进子元素；`Par_Exn` 容器拆开逐个 `<exn …/>`。抛出点位置是 `Position.properties_of` 的标准键机械加 `raised_` 前缀（**实施修正**：原稿只列 `raised_line`/`raised_file`，但 PIDE 编译的代码位置是 offset 制、没有行号，实测 `raised_line` 拿不到而 `raised_offset` 有——机械前缀两种环境都覆盖）。注意：`Interrupt_Breakdown` 与 proper 中断的记录**没有 `<trace>` 子元素**（§3：中断族拿不到帧），它们的信息就是记录属性 + `<message>`。
 
 帧列表处理（先压缩后截断）：列表从最内层到最外层，每条是 `(函数名, 函数定义处位置)`——位置是定义处而非调用点，这正是压缩规则安全的原因。(1) 相邻相同的 `(函数名, 位置)` 合并加 `repeat`（深递归从几十万条变一条，`repeat` 即诊断结论；交替递归不合并）；(2) 压缩后仍超 300 条时保留最内 200 + 最外 100，中间 `<elided frames="N"/>`；(3) `<trace total= compressed= written=>` 让截断可见，旁注"帧列表止于最近一次用 `raise`（非 `Exn.reraise`）改变位置的重抛"。三个常数是 `Exception_Log` 内部常量。
 
