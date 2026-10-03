@@ -34,6 +34,10 @@ signature EVENT_LOG = sig
   val append   : 'a category -> 'a -> unit
   val comment  : 'a category -> string -> unit
   val log_dir  : unit -> Path.T option   (*NONE = logging off*)
+  (*run a writer so that it never raises: interrupts deferred, every other
+    exception handed to the first argument instead of raised (PLAN 3); the
+    discipline every append here follows, offered to other logs*)
+  val never_raising : (exn -> unit) -> (unit -> unit) -> unit
   (*read a log file back: one tree per record, comments and corrupt items
     dropped -- the ML twin of tools/event_log.py*)
   val read_file : Path.T -> XML.tree list
@@ -138,32 +142,36 @@ fun warn_once exn =
      else Output.warning ("Event_Log: record dropped: " ^ General.exnMessage exn);
      true))
 
-(*never raises (except reraising interrupts); non-interrupt failures are
-  dropped, warning once per process -- NOT via the global Exn.capture_body,
-  whose capture-and-discard would consume the thread's break flag (PLAN 3)*)
+(*never raises (except reraising interrupts): the body runs with interrupts
+  deferred, and a non-interrupt failure goes to on_failure -- NOT via the
+  global Exn.capture_body, whose capture-and-discard would consume the
+  thread's break flag (PLAN 3)*)
+fun never_raising on_failure body =
+  Thread_Attributes.uninterruptible_body (fn _ =>
+    (case Exn.capture0 body () of
+      Exn.Res () => ()
+    | Exn.Exn exn => if Exn.is_interrupt exn then Exn.reraise exn else on_failure exn))
+
+(*non-interrupt failures are dropped, warning once per process*)
 fun append_string (Category {name, enabled, state, ...}) make_string =
   (case log_dir () of
     NONE => ()
   | SOME dir =>
       if not (enabled ()) then ()
       else
-        Thread_Attributes.uninterruptible_body (fn _ =>
-          (case Exn.capture0 (fn () =>
-              let val s = record_marker ^ "\n" ^ filter_control (make_string ()) ^ "\n" in
-                Synchronized.change state (fn memo =>
-                  let
-                    val pid = ML_Pid.get ()
-                    val path =
-                      (case memo of
-                        SOME (pid', path') =>
-                          if pid' = pid then path' else new_file dir name pid
-                      | NONE => new_file dir name pid)
-                    val _ = File.append path s
-                  in SOME (pid, path) end)
-              end) () of
-            Exn.Res () => ()
-          | Exn.Exn exn =>
-              if Exn.is_interrupt exn then Exn.reraise exn else warn_once exn)))
+        never_raising warn_once (fn () =>
+          let val s = record_marker ^ "\n" ^ filter_control (make_string ()) ^ "\n" in
+            Synchronized.change state (fn memo =>
+              let
+                val pid = ML_Pid.get ()
+                val path =
+                  (case memo of
+                    SOME (pid', path') =>
+                      if pid' = pid then path' else new_file dir name pid
+                  | NONE => new_file dir name pid)
+                val _ = File.append path s
+              in SOME (pid, path) end)
+          end))
 
 fun append (cat as Category {name, encode, ...}) x =
   append_string cat (fn () =>
