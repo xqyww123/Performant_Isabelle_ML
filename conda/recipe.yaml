@@ -204,7 +204,7 @@ requirements:
     # a new series -- the same commit that touches the .thy/.ML sources.
     #
     # Deliberately NOT derived from ISA_COMPONENT_VERSION: that is this COMPONENT's own
-    # semver (0.1.0), a different axis entirely.
+    # semver, a different axis entirely.
     - isabelle >=2025.2,<2025.3
 
 about:

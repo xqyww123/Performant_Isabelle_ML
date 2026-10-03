@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-10-03)
 
 - `Thread_CPU`: per-thread CPU clocks, `timing`/`cpu_timing` measuring the
   calling thread's CPU, and `apply {thread_cpu, wall}`, a timeout charged in
