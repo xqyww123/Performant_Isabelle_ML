@@ -21,6 +21,10 @@ ML_file \<open>library/inet_collection.ML\<close>
 ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>
 ML_file \<open>library/hash_table.ML\<close>
+(* FNV-1a structural digests (Term_Digest), relocated here from Isabelle_RPC so that
+   any session based on Performant_Isabelle_ML can hash terms the way Isabelle_RPC's
+   universal keys do; needs the hash tables above. *)
+ML_file \<open>library/term_digest.ML\<close>
 ML_file \<open>library/dynamic_array.ML\<close>
 ML_file \<open>library/term_size.ML\<close>
 ML_file \<open>library/theory_data_with_constructor.ML\<close>
