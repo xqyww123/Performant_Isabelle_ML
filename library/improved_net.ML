@@ -1,53 +1,27 @@
-(*  Title:      Pure/net.ML
+(*  Title:      Performant_Isabelle_ML/library/improved_net.ML
+    Author:     Lawrence C Paulson, Cambridge University Computer Laboratory
+    Author:     Qiyuan Xu
+    Copyright   1993  University of Cambridge
 
-Discrimination nets: a data structure for indexing items
+iNet, the Improved_Net: Pure's discrimination net (structure Net, net.ML) with four
+changes.
+  - Abstractions are keyed by their bodies, except where an instantiation could
+    eta-contract them.  match_term discriminates an abstraction in the query by its
+    body; unify_term treats it as a wildcard.
+  - Terms need not be beta-eta normal: the *_term functions normalize them.  They must
+    be well typed.
+  - The constant `Pure.type' (TYPE('a)) of type `'a itself' is keyed by its type
+    argument; with any other type it is an ordinary atom.
+  - merge keeps each net's order of the items under one key (fold_rev where Net uses
+    fold).
 
-From the book
-    E. Charniak, C. K. Riesbeck, D. V. McDermott.
-    Artificial Intelligence Programming.
-    (Lawrence Erlbaum Associates, 1980).  [Chapter 14]
+Contract: match_term returns every item whose term has a type-correct instance
+beta-eta equal to the query, unify_term every item whose term shares such an instance
+with it, assuming every `Pure.type' has a type `_ itself'.  Other candidates are
+usually fewer than Net's, but not a subset of them.
 
-match_term no longer treats lambda abstractions as wildcards; instead they are
-encoded as virtual applications and discriminated by body structure.
-Terms are automatically beta-eta-normalized on insert/delete/match/unify.  On the
-query side the normalization is fused into the descent (`nf_view'): the net stops
-at a `Leaf', so normalization stops there too.  (One exception: deciding eta for
-an abstraction scans the whole operator, whatever the net's depth -- see
-`eta_operator'.)
-
-MODIFIED BY: Qiyuan Xu
-
-Adding special support for \<open>TYPE\<close> so that the net can efficiently match terms containing explicit
-  type annotation.
-
-Lambda abstractions are encoded as virtual applications Const("\<lambda>") $ body.
-
-*)
-
-(*
-signature NET = sig
-include NET
-
-val insert_typ : ('a * 'a -> bool) -> typ * 'a -> 'a net -> 'a net
-val insert_typ_safe : ('a * 'a -> bool) -> typ * 'a -> 'a net -> 'a net
-val delete_typ : ('b * 'a -> bool) -> typ * 'b -> 'a net -> 'a net
-val delete_typ_safe : ('b * 'a -> bool) -> typ * 'b -> 'a net -> 'a net
-val match_typ : 'a net -> typ -> 'a list
-val unify_typ : 'a net -> typ -> 'a list
-
-end
-
-structure Net : NET = struct
-open Net
-
-fun insert_typ eq (typ,x) = insert_term eq (encode_type typ, x)
-fun insert_typ_safe eq (typ,x) = insert_term_safe eq (encode_type typ, x)
-fun delete_typ eq (typ,x) = delete_term eq (encode_type typ, x)
-fun delete_typ_safe eq (typ,x) = delete_term_safe eq (encode_type typ, x)
-
-fun match_typ net typ 
-
-end
+No ML antiquotations: Pure loads this file unchanged between envir.ML and consts.ML,
+before antiquotations exist.
 *)
 
 
@@ -127,10 +101,9 @@ fun encode_type (Type (c, Ts)) = Term.list_comb (Const (c, dummyT), map encode_t
   (`match_term' and `unify_term' build no keys -- they normalize along the descent,
   see `nf_view'.)
 
-  Edit the front-rigid branch last: it is the only clause resting on a negative
-  property rather than an impossibility, it is the one already broken once, and
-  random testing reaches it in 0.05% of verdicts.  Rationale and measurements:
-  INET_FIX_PLAN.md.*)
+  Change the front-rigid branch with the most care: it is the only clause resting on
+  a negative property rather than an impossibility, and random testing rarely reaches
+  it.*)
 fun may_unify_typ (T, U) =
       T = dummyT orelse U = dummyT orelse
       (case (T, U) of
@@ -170,7 +143,7 @@ fun eta_unstable (Ts, body) = has_var body andalso may_be_app_ending_in (Ts, bod
 
 fun add_key_of_terms (Ts, t, cs) =
   let fun rands (f$t, cs) = CombK :: rands (f, add_key_of_terms(Ts, t, cs))
-        | rands (Const(\<^const_name>\<open>Pure.type\<close>, \<^Type>\<open>itself T\<close>), cs) =
+        | rands (Const ("Pure.type", Type ("itself", [T])), cs) =
                     CombK :: AtomK "T" :: add_key_of_terms (Ts, encode_type T, cs)
         | rands (Const(c,_), cs) = AtomK c :: cs
         | rands (Free(c,_),  cs) = AtomK c :: cs
@@ -311,10 +284,8 @@ fun look1 (atoms, a) nets =
 
 (*** Normalization fused with the descent: as deep as the net goes and no deeper.
      Exception: deciding eta for an abstraction scans its whole operator
-     (`eta_operator's `Envir.beta_norm' guard has no early exit), whatever the
-     net's depth.  Real workloads never trigger it (measured 0 firings); the
-     synthetic shape that pays is the cascading eta tower, priced and archived
-     in INET_FUSED_NORM_IMPL_PLAN.md par-6.6/par-17. ***)
+     (`eta_operator' runs `Envir.beta_norm' over it), whatever the net's depth.
+     In the workloads measured, `eta_operator' was never called. ***)
 
 val head_norm = Envir.head_norm Envir.init;
 
@@ -368,8 +339,9 @@ and eta_operator f =
 (*Return the nodes accessible from the term (cons them before nets)
   "unif" signifies retrieval for unification rather than matching.
   Var in net matches any term.
-  Abs or Var in object: if "unif", regarded as wildcard,
-                                   else matches only a variable in net.
+  Var in object: if "unif", regarded as wildcard, else matches only a variable in net.
+  Abs in object: if "unif", regarded as wildcard, else matches a variable in net or,
+                 through the lambda arc, an abstraction whose body matches.
 
   INVARIANT: every term handed to `matching' is an `nf_view' result.  All call
   sites establish it: both entry points apply it, `rands' applies it to every
@@ -397,7 +369,7 @@ and rands _ _ (Leaf _, nets) = nets
            (case rands unif f (comb, []) of
               [] => nets                       (*no arc wants `u': do not normalize it*)
             | ns => fold_rev (matching unif (nf_view u)) ns nets)
-       | Const (\<^const_name>\<open>Pure.type\<close>, \<^Type>\<open>itself T\<close>) =>
+       | Const ("Pure.type", Type ("itself", [T])) =>
            (case rands unif (Const ("T", Term.dummyT)) (comb, []) of
               [] => nets
             | ns => fold_rev (matching unif (encode_type T)) ns nets)
