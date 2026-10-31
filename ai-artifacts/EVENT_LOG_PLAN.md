@@ -22,7 +22,7 @@
 ## 2. 定案的决策（2026-08-30，含两轮评审后的修订）
 
 1. structure：**两个文件两个结构**。`library/event_log.ML` → `Event_Log`（通用：`category`/`append`/`comment`）；`library/exception_log.ML` → `Exception_Log`（异常类别、`capture`、帧列表压缩截断、`Par_Exn` 拆分、中断策略）。都放 `Performant_Isabelle_ML`，由 `Performant_Isabelle_ML.thy` 加载。
-2. 配置：**单一环境变量 `ISABELLE_EVENT_LOG_DIR`**。未设 → 默认 `$ISABELLE_HOME_USER/event_log`（**默认开启**）；设为空串 → 关闭。不用系统选项（`Performant_Isabelle_ML` 不是注册组件，其 `etc/options` 不会被读，`options.scala:257` 只扫组件目录），不用 `declare` 属性（上下文级旋钮改不了进程级事实，且对无 context 的 `append` 无效）。想要 Isabelle 原生入口的用户在某个已注册组件的 `etc/settings` 里 export 它。
+2. 配置：**单一环境变量 `ISABELLE_EVENT_LOG_DIR`**。未设 → 默认 `$ISABELLE_HOME_USER/event_log`（**默认开启**）；设为空串 → 关闭；**值格式不对**（`Path.explode`/`Path.expand` 抛 `ERROR`，如路径段含冒号、引用未定义的 `$变量`）→ 当作关闭，并警告一次（2026-10-31 作者裁决 "a 当作关闭并警告（推荐）"，出自 Semantic_Embedding `ai-artifacts/LINK_LAYER_PLAN.md` D69 的代码评审 A-correctness/2：今天 `log_dir` 在 `append_string` 的 `never_raising` 之外、在 `capture` 入口处被调用，格式不对时每个记录点和采集点都抛错，违反"写入永远不抛错"；改在 `log_dir` 一处；2026-10-31 已实施，未提交）。不用系统选项（`Performant_Isabelle_ML` 不是注册组件，其 `etc/options` 不会被读，`options.scala:257` 只扫组件目录），不用 `declare` 属性（上下文级旋钮改不了进程级事实，且对无 context 的 `append` 无效）。想要 Isabelle 原生入口的用户在某个已注册组件的 `etc/settings` 里 export 它。
 3. 频率责任交给类别：`exception` 类别默认开（单条 KB 量级、低频——`capture` 只在异常**逃出采集点**且过了 `record` 谓词时才写，被就地处理的异常零日志）；**高频类别各自带布尔开关、默认关**：新 Config `\<phi>log_guard_race`、`\<phi>log_guess_inst`（`Attrib.setup_config_bool`，默认 false，替代原路径配置），由调用点自查——这两处调用点都持有 ctxt，而 `category` 值里的 `enabled` 是进程级开关（无 ctxt 可用），上下文级开关属于调用点。不做轮转、不做清理。
 4. 文件布局：`<日志目录>/<category>/<启动时间>-<pid>.xml`；**路径在每次写入时按 `ML_Pid.get ()` 求值**——记忆化的是 `(pid, 路径)` 对，pid 与记忆不符（本进程是继承堆的子会话）就以当前时间与当前 pid 重算，"启动时间"因此实为**本进程首次写入的时间**。这样做是因为会话堆镜像会把初始化期算好的路径连同持有它的 `Synchronized.var` 一起传给并行的子会话进程（`ml_heap.ML:35-36`）。目录由纯 ML 的递归 mkdir 保证存在（**实施修正**：原稿写 `Isabelle_System.make_directory`，但它走 Scala 桥，裸 ML 进程（如 `isabelle console`）没有 Scala——日志器不得依赖它；实测正是在裸进程里失效后改的）。文件无 `<?xml?>` 头、无根元素、无首行注释。
 5. 格式：**XML，一条记录一个顶层元素，可跨多行**。记录边界是每个条目前的一行注释标记 `<!-- record -->`（§5；2026-09-14 修订——原文"由一次机械变换保证……是定理不是纪律"描述的是评审 agent 的补空格方案，已撤回）。不用 JSONL（Isabelle/ML 没有 JSON 编码器，Pure 只有 `json.scala`）；不用 MessagePack（中途损坏无法重同步；`mlmsgpack` 虽已在本 session 加载，此理由独立成立）；不用 YXML（Python 侧无解码器、不可 grep，而读取端就是 Python 和人）。
@@ -146,8 +146,10 @@ fun capture {site, record} body =
 | `race.ML:203-204` 与 `:270`（中断逃出比赛的两个分支） | 中断/Breakdown 归因——今天 `breakdown_probe` 的全部价值；先接上这两处才许删探针 |
 | `reasoners.ML:1326-1332` 的 `checked_io` | 诊断 I/O 自身的失败 |
 | 最外层 `\<phi>` Isar 命令实现 | 兜底：漏网异常的无帧记录（有帧版留作 §10 的实验项） |
+| Isa-Mini `Agent/agent_server.ML`：site `"aoa_replay step <i>/<n> op=…"`（回放已存证明的每一步）与 `"hammer_or_aoa_method (arrival at Isar)"`（方法失败、异常到达 Isar 处） | 资源耗尽（`Interrupt_Breakdown`）的归因：前者记到出事的那一步与操作，后者兜住到达 Isar 的那一次。Isa-Mini 提交 005bc99（2026-08-30）加入，注释引本节；本表 2026-10-31 补列（D69 的代码评审发现漏列） |
+| Semantic_Embedding `semantic_store.ML` 的 `degrade_links`，site `"Semantic_Store.links"` | link finder 的 `Interrupt_Breakdown`：链接层的 A1 在这里把它吞下（该上下文不给链接、打警告、`by aoa` 继续），它不再传到 Isa-Mini `Agent/agent_server.ML` 的记录点 `"hammer_or_aoa_method (arrival at Isar)"`。2026-10-30 作者裁决加入（Semantic_Embedding `ai-artifacts/LINK_LAYER_PLAN.md` D69）；会故意制造该异常的测试跑时把 `ISABELLE_EVENT_LOG_DIR` 指到临时目录 |
 
-**明确不加**：Minilang 的 `timed_OPR`（作者裁决）；Isa-Mini 其余入口（`hammer_or_aoa_method`、`run_AoA`，另案，记录带 `invocation_id`）。
+**明确不加**：Minilang 的 `timed_OPR`（作者裁决）；Isa-Mini 入口（`hammer_or_aoa_method`、`run_AoA`）的完整整合——带 `invocation_id` 的记录——另案；目前那里只有上表的两个资源耗尽记录点。
 
 **探针迁移**：`guard_race`（含 `.goals` 合并）、`guess_inst` 两类别在 `reasoners.ML`/`guess_instantiate.ML` 顶层声明；记录属性与 `<stats>` 的取值代码从 `breakdown_probe.ML:33-54` 搬（`ML_Statistics.get`/`Isabelle_Thread.print`/`Future.worker_task`+`Task_Queue.str_of_task_groups` 逐项就是所需），不照描述重写。
 

@@ -16,7 +16,8 @@ text and attribute values, and a comment body never contains "--".
 
 Configuration (PLAN 2.2): the single environment variable
 ISABELLE_EVENT_LOG_DIR.  Unset -> $ISABELLE_HOME_USER/event_log (default ON);
-set to the empty string -> logging off.  Re-read on every use, never memoized:
+set to the empty string -> logging off; malformed (a path element with ":", an
+undefined $VAR) -> logging off, warned once.  Re-read on every use, never memoized:
 a memoized value would be saved into session heaps and override a child
 process's own environment.
 
@@ -53,11 +54,22 @@ structure Event_Log : EVENT_LOG = struct
 
 (* configuration *)
 
+val malformed_warned = Synchronized.var "Event_Log.malformed_warned" false
+
+(*a malformed value is off, warned once: log_dir runs outside never_raising (PLAN 2.2)*)
 fun log_dir () =
   (case OS.Process.getEnv "ISABELLE_EVENT_LOG_DIR" of
     NONE => SOME (Path.expand (Path.explode "$ISABELLE_HOME_USER/event_log"))
   | SOME "" => NONE
-  | SOME dir => SOME (Path.expand (Path.explode dir)))
+  | SOME dir =>
+      SOME (Path.expand (Path.explode dir))
+        handle ERROR msg =>
+          (Synchronized.change malformed_warned (fn warned =>
+             (if warned then ()
+              else Output.warning
+                ("Event_Log: logging is off, ISABELLE_EVENT_LOG_DIR is malformed: " ^ msg);
+              true));
+           NONE))
 
 
 (* categories *)
