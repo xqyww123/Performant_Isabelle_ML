@@ -76,7 +76,7 @@ jobs:
       matrix:
         include:
           - target: arm64-darwin
-            runner: macos-14          # Apple silicon
+            runner: macos-15          # Apple silicon (macos-14 is retired 2026-11-02)
             shell: bash
           - target: x86_64-darwin
             runner: macos-15-intel    # The only remaining Intel macOS image.  Do NOT
