@@ -69,7 +69,7 @@ ML \<open>
     in advance_on msg clock t (fn () => x := (! x * 3 + 1) mod 1000003) end
 
   (*wait, WITHOUT burning, until `clock' has advanced by t*)
-  fun poll_on msg clock t = advance_on msg clock t (fn () => OS.Process.sleep poll_floor)
+  fun poll_on msg clock t = advance_on msg clock t (fn () => Time.sleep poll_floor)
 
   (*the same on the calling thread's own clock*)
   fun burn_cpu t =
@@ -105,7 +105,7 @@ ML \<open>
   val _ = assert "CPU never exceeds wall" (cpu <= wall + tick)
 
   (*sleeping accrues no CPU*)
-  val cpu = own_cpu OS.Process.sleep (Time.fromMilliseconds 50)
+  val cpu = own_cpu Time.sleep (Time.fromMilliseconds 50)
   val _ = writeln ("own clock: slept 50 ms wall, thread CPU " ^ us cpu)
   val _ = assert "CPU of a 50 ms sleep below 5 ms" (cpu < Time.fromMilliseconds 5)
 \<close>
@@ -220,15 +220,15 @@ ML \<open>
 \<close>
 
 ML \<open>
-  (*a foreign interrupt -- one this module did not cause, here a cancellation
-    from another thread -- stays an interrupt.  It MUST come from another
-    thread: Isabelle_Thread.interrupt_thread stores the break flag only after
-    Thread.Thread.interrupt returns (isabelle_thread.ML:145-147), so a thread
-    interrupting itself unwinds first, loses the flag, and the interrupt
-    arrives as Interrupt_Breakdown -- the case the NEXT block tests on purpose.
-    (A self-interrupt inside the body was tried and asserts false.)  The
-    interrupter waits until the body is running, so the interrupt provably
-    lands after the registration and not before apply is entered.*)
+  (*a foreign interrupt -- one this module did not cause, here a cancellation from
+    another thread -- stays an interrupt.  It MUST come from another thread:
+    Isabelle_Thread.interrupt_thread stores the break flag only after
+    Thread.Thread.interrupt returns (isabelle_thread.ML:145-147 in
+    interrupt_thread), so a thread interrupting itself unwinds first, loses the
+    flag, and the interrupt arrives as Interrupt_Breakdown -- the case the NEXT
+    block tests on purpose.  (A self-interrupt inside the body was tried and asserts
+    false.)  The interrupter waits until the body is running, so the interrupt
+    provably lands after the registration and not before apply is entered.*)
   val target = Isabelle_Thread.self ()
   val entered = Synchronized.var "thread_cpu_test_entered" false
   val _ =
@@ -289,7 +289,7 @@ ML \<open>
 ML \<open>
   (*a blocked thread accrues no CPU: the limit does not fire (the liveness contract)*)
   val wall0 = Time.now ()
-  val _ = cpu_apply (Time.fromMilliseconds 20) OS.Process.sleep (Time.fromMilliseconds 100)
+  val _ = cpu_apply (Time.fromMilliseconds 20) Time.sleep (Time.fromMilliseconds 100)
   val _ = writeln ("apply 20 ms over a 100 ms sleep: returned normally after " ^ ms (Time.now () - wall0))
 \<close>
 
@@ -353,7 +353,7 @@ ML \<open>
   val _ = assert "timing covers the burn" (cpu >= Time.fromMilliseconds 40)
   val _ = assert "timing: thread CPU never exceeds elapsed" (cpu <= elapsed + tick)
 
-  val (thread_cpu, ()) = Thread_CPU.cpu_timing OS.Process.sleep (Time.fromMilliseconds 50)
+  val (thread_cpu, ()) = Thread_CPU.cpu_timing Time.sleep (Time.fromMilliseconds 50)
   val cpu = (case thread_cpu of SOME t => t | NONE => error "cpu_timing: no thread CPU")
   val _ = writeln ("cpu_timing: slept 50 ms wall, thread CPU " ^ us cpu)
   val _ = assert "cpu_timing of a 50 ms sleep below 5 ms" (cpu < Time.fromMilliseconds 5)
@@ -391,7 +391,7 @@ ML \<open>
     wakes a sleeping thread at 1 s granularity, hence the 2 s bound; the
     payload is that limit's own clock, wall elapsed*)
   val wall0 = Time.now ()
-  val r = Exn.capture (Thread_CPU.apply {thread_cpu = Time.fromMilliseconds 20, wall = SOME (Time.fromMilliseconds 100)} OS.Process.sleep) (Time.fromSeconds 5)
+  val r = Exn.capture (Thread_CPU.apply {thread_cpu = Time.fromMilliseconds 20, wall = SOME (Time.fromMilliseconds 100)} Time.sleep) (Time.fromSeconds 5)
   val elapsed = Time.now () - wall0
   val _ = writeln ("cpu 20 ms, wall 100 ms over a 5 s sleep: TIMEOUT after " ^ ms elapsed)
   val _ = assert "the wall limit ended the sleep" (elapsed < Time.fromSeconds 2)
@@ -414,17 +414,11 @@ ML \<open>
 section \<open>timeout_scale\<close>
 
 ML \<open>
-  (*the default option is changed and restored; it round-trips as a string,
-    so the restoration is exact.  It is process-wide, though: meanwhile every
-    Timeout.apply in the process is scaled too -- one more reason this theory
-    is run by hand, in a process of its own*)
+  (*timeout_scale = 4 for this thread only, during this call; restored on every exit*)
   val (cpu, _) =
-    Thread_Attributes.uninterruptible_body (fn run =>
-      let
-        val saved = Options.get_default "timeout_scale"
-        val _ = Options.put_default "timeout_scale" "4.0"
-        val result = Exn.capture0 (fn () => run fire_once (Time.fromMilliseconds 20)) ()
-      in Options.put_default "timeout_scale" saved; Exn.release result end)
+    Options.strict_thread_update
+      [Options.spec \<^system_option>\<open>timeout_scale\<close> "4.0"]
+      fire_once (Time.fromMilliseconds 20)
   val _ = writeln ("apply 20 ms under timeout_scale = 4: TIMEOUT at CPU " ^ us cpu)
   val _ = assert "a CPU limit is scaled by timeout_scale"
     (Time.fromMilliseconds 80 <= cpu andalso cpu <= Time.fromMilliseconds 80 + slack)

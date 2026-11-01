@@ -31,9 +31,12 @@ end
 
 structure Phi_Tool_Symbol : PHI_TOOL_SYMBOL = struct
 
-val symbolT = Type ("SSymb.symbol", [])
-val digits = ["SSymb.A", "SSymb.B", "SSymb.C", "SSymb.D", "SSymb.E", "SSymb.F"]
-val zero = Const ("SSymb.Z", symbolT)
+val symbolT = Type (\<^unchecked_name>\<open>SSymb.symbol\<close>, [])
+val digits =
+  [\<^unchecked_name>\<open>SSymb.A\<close>, \<^unchecked_name>\<open>SSymb.B\<close>,
+   \<^unchecked_name>\<open>SSymb.C\<close>, \<^unchecked_name>\<open>SSymb.D\<close>,
+   \<^unchecked_name>\<open>SSymb.E\<close>, \<^unchecked_name>\<open>SSymb.F\<close>]
+val zero = Const (\<^unchecked_name>\<open>SSymb.Z\<close>, symbolT)
 val digit_consts = map (fn d => Const (d, symbolT --> symbolT)) digits
 val constants = zero :: digit_consts
 
@@ -52,7 +55,7 @@ fun decode t =
             | k => Option.map (fn r => 6 * r + k + 1) (decode x))
      | _ => NONE
 
-val symbols = Synchronized.var "Phi_Tool_Symbol.symbols"
+val symbols = Synchronized.var \<^unchecked_name>\<open>Phi_Tool_Symbol.symbols\<close>
                 {cnt = 0,
                  syms = Symtab.empty : term Symtab.table,
                  lookup = Inttab.empty : string Inttab.table}

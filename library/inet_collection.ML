@@ -73,12 +73,12 @@ fun del x = Data.map (iNet.delete_term_safe eq (key_of x, x));
 end;
 
 
-(*The thm layer follows named_thms.ML:18-43 line by line.  Three things are
-  new: the `key_of'' wrapping, `get_net', and exporting `content' (`NAMED_THMS'
-  keeps it private, only feeding it to `add_thms_dynamic'; here the same outlet
-  is open to ML consumers).  The two outlets deliberately differ: `get_net'
-  hands out the stored, context-free entries; `content'/`get' transfer them
-  into the caller's context first.*)
+(*The thm layer follows named_thms.ML:18-43 in functor Named_Thms line by line.
+  Three things are new: the `key_of'' wrapping, `get_net', and exporting
+  `content' (`NAMED_THMS' keeps it private, only feeding it to
+  `add_thms_dynamic'; here the same outlet is open to ML consumers).  The two
+  outlets deliberately differ: `get_net' hands out the stored, context-free
+  entries; `content'/`get' transfer them into the caller's context first.*)
 
 signature INET_THM_COLLECTION =
 sig

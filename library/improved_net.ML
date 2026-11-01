@@ -25,12 +25,12 @@ before antiquotations exist.
 *)
 
 
-(*A copy of `NET' (Pure/net.ML:16-41) with two changes: `key' is made concrete, so
-  that white-box tests can inspect the encoding, and `insert_term_last(_safe)' is
-  added.  It is a copy and not an `include'
-  because SML will not let a signature re-specify a type the include brought in
-  ("Type (key) is already present in this signature").  Re-sync this block if Pure's
-  `NET' changes; the ascription at the bottom of this file is what catches drift.*)
+(*A copy of `NET' (Pure/net.ML:16-41 in signature NET) with two changes: `key' is
+  made concrete, so that white-box tests can inspect the encoding, and
+  `insert_term_last(_safe)' is added.  It is a copy and not an `include' because SML
+  will not let a signature re-specify a type the include brought in ("Type (key) is
+  already present in this signature").  Re-sync this block if Pure's `NET' changes;
+  the ascription at the bottom of this file is what catches drift.*)
 signature INET =
 sig
   datatype key = CombK | VarK | AtomK of string
@@ -84,11 +84,12 @@ fun encode_type (Type (c, Ts)) = Term.list_comb (Const (c, dummyT), map encode_t
     i.e. virtual applications Const("\<lambda>") $ body.
 *)
 (*Eta-contraction is not stable under instantiation: a pattern that cannot contract
-  may have instances that can, so the stored key keeps a lambda arc the query key has
-  lost and the net reports no candidate for a rule that matches.  Upstream avoids
-  this by making every abstraction a wildcard (net.ML:50-51); this does it only where
-  needed.  Over-reporting danger is safe -- it only costs discrimination -- and all
-  three conjuncts are load-bearing: without `has_var', `%x. G (F x) x' is misjudged.
+  may have instances that can, so the stored key keeps a lambda arc the query key
+  has lost and the net reports no candidate for a rule that matches.  Upstream
+  avoids this by making every abstraction a wildcard (net.ML:50-51, the comment on
+  add_key_of_terms); this does it only where needed.  Over-reporting danger is safe
+  -- it only costs discrimination -- and all three conjuncts are load-bearing:
+  without `has_var', `%x. G (F x) x' is misjudged.
 
   PRECONDITION: the term is beta-normal.  The front-rigid branch argues that a
   substitution cannot erase `x' from a front holding no schematic, which is false on

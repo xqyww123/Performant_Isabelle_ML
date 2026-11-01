@@ -10,16 +10,17 @@
    eagerly and on purpose: material that exists only in the beta normal form is
    invisible to a subterm traversal (a rule matching `ff 2' never fires inside
    `(%x. gg (ff x)) $ 2'), and a rule whose right-hand side is an abstraction
-   manufactures such a redex mid-traversal.  `Pattern.rewrite_term' contracts in
-   the same places (more_pattern.ML:67, 73-75).
+   manufactures such a redex mid-traversal.  `Pattern.rewrite_term' contracts in the
+   same places (more_pattern.ML:67, 73-75 in rewrite_term_mode).
 
-   Why not something existing.  `Raw_Simplifier.rewrite' has the right traversal but
-   eta-contracts and renames binders: a rule firing at a node composes the equation
-   with `Thm.eta_conversion' of that node, so parts no rule touched come back
-   eta-contracted with the user's binder names gone -- for output read by a human or
-   an LLM that is a real loss.  `Pure/conv.ML' does no such damage, but none of its
-   four traversals re-scans the RESULT of a rewrite in place, so a fixpoint costs
-   `Conv.repeat_changed_conv' around the whole term, i.e. up to O(depth) full sweeps.
+   Why not something existing.  `Raw_Simplifier.rewrite_wrt' has the right traversal
+   but eta-contracts and renames binders: a rule firing at a node composes the
+   equation with `Thm.eta_conversion' of that node, so parts no rule touched come
+   back eta-contracted with the user's binder names gone -- for output read by a
+   human or an LLM that is a real loss.  `Pure/conv.ML' does no such damage, but
+   none of its four traversals re-scans the RESULT of a rewrite in place, so a
+   fixpoint costs `Conv.repeat_changed_conv' around the whole term, i.e. up to
+   O(depth) full sweeps.
 
    Candidates are tried most-specific-first across keys: a general rule never
    shadows a specific one.  `Raw_Simplifier' does the opposite (`sort_rrules'
@@ -112,7 +113,8 @@
 
    (An earlier third deviation -- "a beta redex is not a rewrite step" -- was
    withdrawn 2026-08: it made rewrites that exist only in the beta normal form
-   silently unreachable.  Beta contraction now mirrors more_pattern.ML:67/:73-75.)
+   silently unreachable.  Beta contraction now mirrors more_pattern.ML:67, 73-75 in
+   rewrite_term_mode.)
 
    Measurements, soundness arguments and review history: NET_REWRITE_PLAN.md.
 
@@ -127,9 +129,9 @@ sig
 
      INPUT CONTRACT: every rule must already be a meta-equation `lhs == rhs'.  This
      module does not convert object-logic equations and does not want to -- that
-     conversion is logic-specific and `Raw_Simplifier.mksimps' (raw_simplifier.ML:67)
-     is the canonical one.  Pass its output.  Anything else is rejected by
-     `dest_rule'.
+     conversion is logic-specific and `Raw_Simplifier.mksimps' (raw_simplifier.ML:48
+     in signature RAW_SIMPLIFIER) is the canonical one.  Pass its output.  Anything
+     else is rejected by `dest_rule'.
 
      ORDER AMONG RULES WITH THE SAME NET KEY: the whole semantics is a LIST
      PREPEND.  `add_rule' conses onto the front of that key's list, and lookup
@@ -404,13 +406,13 @@ fun single_step_rewrite_conv mk_conv net ctxt ct =
   `Conv.first_conv' is to a conversion: try the candidates in turn, keep the first
   that works.
 
-  NO exception handler here, deliberately -- it used to swallow TERM/TYPE,
-  mirroring `Conv.else_conv'.  The matcher now types a loose `Bound' from `bvs',
-  so the one legitimate source of TERM (`fastype_of' on a bare `Bound',
-  term.ML:394) is gone, and a candidate that fails to MATCH already comes back as
-  NONE from `rewr_skel_term'.  What is left for an exception here to mean is a
-  broken invariant or garbage input, and that must be LOUD, not a silently
-  dropped candidate.  The conv layer keeps its catching `first' loop: there it is
+  NO exception handler here, deliberately -- it used to swallow TERM/TYPE, mirroring
+  `Conv.else_conv'.  The matcher now types a loose `Bound' from `bvs', so the one
+  legitimate source of TERM (`fastype_of' on a bare `Bound', term.ML:394 in
+  fastype_of_bound) is gone, and a candidate that fails to MATCH already comes back
+  as NONE from `rewr_skel_term'.  What is left for an exception here to mean is a
+  broken invariant or garbage input, and that must be LOUD, not a silently dropped
+  candidate.  The conv layer keeps its catching `first' loop: there it is
   `Conv.else_conv' semantics, not a loose-`Bound' workaround.*)
 fun single_step_rewrite_term mk_rew net ctxt bvs t =
   get_first (fn x => mk_rew ctxt x bvs t) (iNet.match_term net t);
@@ -451,12 +453,13 @@ fun has_extra_var (lhs, rhs) =
 (*(c) A LEFT-HAND SIDE THAT IS NOT A FIRST-ORDER PATTERN, e.g. `qq (%x. ?P x)'.
 
   The whole point of a hole is that the material in it came OUT of the term being
-  rewritten, and the bottom-up traversal has therefore already normalised it.  For
-  a first-order left-hand side that is true: every binding `Pattern.match' produces
-  is a subterm of the object.  For a higher-order one it is not.  `match_bind'
-  (Pure/pattern.ML:319-329) calls `mkabs' (:109-113), which BUILDS an abstraction
-  that does not occur in the object at all; the traversal has never visited it, so
-  nothing has ever been tried on it, and pruning would skip it as if it had been.
+  rewritten, and the bottom-up traversal has therefore already normalised it.  For a
+  first-order left-hand side that is true: every binding `Pattern.match' produces is
+  a subterm of the object.  For a higher-order one it is not.  `match_bind'
+  (Pure/pattern.ML:319-329 in match_bind) calls `mkabs' (:109-113 in mkabs), which
+  BUILDS an abstraction that does not occur in the object at all; the traversal has
+  never visited it, so nothing has ever been tried on it, and pruning would skip it
+  as if it had been.
 
   Counterexample, measured on the module before this test existed: rules
   `qq (%x. ?P x) == rr ?P' and `?F == hh' applied to `qq gg' give `rr (%x. gg x)'
@@ -466,8 +469,8 @@ fun has_extra_var (lhs, rhs) =
 
   `mkabs' is reached exactly when `is = ints_of pargs' is non-empty, i.e. exactly
   when a `Var' occurs applied in the pattern -- which is exactly what
-  `Pattern.first_order' (Pure/more_pattern.ML:34-37) decides.  The test is therefore
-  not an approximation of the danger; it is the same condition.
+  `Pattern.first_order' (Pure/more_pattern.ML:34-37 in first_order) decides.  The
+  test is therefore not an approximation of the danger; it is the same condition.
 
   IT IS HOWEVER THE CONSERVATIVE FORM, per-RULE: a rule that *could* synthesise
   gives up pruning at *every* application, including those where nothing was.  The
@@ -481,11 +484,11 @@ fun has_extra_var (lhs, rhs) =
   test breaks the fuzz corpus.*)
 fun lhs_not_first_order lhs = not (Pattern.first_order lhs);
 
-(*A FORK of `Conv.rewr_conv' (Pure/conv.ML:170-183) that also returns the skeleton.
-  Everything down to `rule4' is copied verbatim and must stay that way; a wrapper
-  around `Conv.rewr_conv' cannot do this instead, because by the time the thm comes
-  back the rule is gone AND the deep beta has already happened, so neither condition
-  (a) nor the right-hand side itself is still available.*)
+(*A FORK of `Conv.rewr_conv' (Pure/conv.ML:170-183 in rewr_conv) that also returns
+  the skeleton.  Everything down to `rule4' is copied verbatim and must stay that
+  way; a wrapper around `Conv.rewr_conv' cannot do this instead, because by the time
+  the thm comes back the rule is gone AND the deep beta has already happened, so
+  neither condition (a) nor the right-hand side itself is still available.*)
 fun rewr_skel_conv rule ct =
   let
     val rule1 = Thm.incr_indexes (Thm.maxidx_of_cterm ct + 1) rule;
@@ -513,18 +516,18 @@ fun rewr_skel_conv rule ct =
   object is typed from `bvs' instead of raising.  What `Pattern.match_rew' used to
   do here is reproduced piece by piece: `Term.rename_abs' (binder names from the
   redex onto the right-hand side, whose result is precisely the skeleton),
-  `handle Pattern.MATCH => NONE' (an iNet candidate failing to match is the
-  NORMAL case, and `PLPR_Pattern.match' raises `Pattern.MATCH' on failure -- this
-  handler is load-bearing, and it is NOT the deleted TERM/TYPE one), and the
-  substitution -- `PLPR_Pattern.subst_term', which lifts each binding by its
-  landing depth (`Envir.subst_term' does not, and silent capture was the cost).
-  `fixed_bounds' is `K true' ALWAYS: every contextual binder is a fixed variable
-  to the matcher; anything else silently drops every rewrite whose binding
-  mentions one, so the choice is not exported.  The `Envir.beta_norm' and the
-  three conditions mirror `rewr_skel_conv' as before (`Thm.beta_conversion true'
-  IS `Envir.beta_norm', thm.ML:1528; `beta_norm' returns the IDENTICAL value when
-  there is nothing to contract, so `pointer_eq' answers condition (a) in constant
-  time, failing toward lost pruning only).
+  `handle Pattern.MATCH => NONE' (an iNet candidate failing to match is the NORMAL
+  case, and `PLPR_Pattern.match' raises `Pattern.MATCH' on failure -- this handler
+  is load-bearing, and it is NOT the deleted TERM/TYPE one), and the substitution --
+  `PLPR_Pattern.subst_term', which lifts each binding by its landing depth
+  (`Envir.subst_term' does not, and silent capture was the cost).  `fixed_bounds' is
+  `K true' ALWAYS: every contextual binder is a fixed variable to the matcher;
+  anything else silently drops every rewrite whose binding mentions one, so the
+  choice is not exported.  The `Envir.beta_norm' and the three conditions mirror
+  `rewr_skel_conv' as before (`Thm.beta_conversion true' IS `Envir.beta_norm',
+  thm.ML:1566 in beta_conversion; `beta_norm' returns the IDENTICAL value when there
+  is nothing to contract, so `pointer_eq' answers condition (a) in constant time,
+  failing toward lost pruning only).
 
   Still NOT done here, deliberately: `Thm.incr_indexes'.  `Conv.rewr_conv' renames
   the rule's schematics apart from the term's at every application; this function
@@ -720,14 +723,14 @@ fun make_guard opts ctxt0 t0 =
        else ());
   in {before_step = before_step, after_step = after_step} end;
 
-(*A FORK of `Conv.sub_conv' (Pure/conv.ML:131), threading a skeleton and the two
-  guards.  Three reasons the original cannot be used: its callback takes only a
-  context, so there is nowhere to put the skeleton; it is `comb_conv (conv ctxt)',
-  which gives the function part and the argument part the SAME conversion, where
-  the two halves need DIFFERENT skeletons; and the descent must contract a beta
-  redex BEFORE descending, charged against the guards -- which live inside
-  `bottom_fixpoint_gen_conv', so they have to be threaded in as an argument
-  (`(bef, aft)' below), or the two layers diverge at different moments.
+(*A FORK of `Conv.sub_conv' (Pure/conv.ML:131 in sub_conv), threading a skeleton and
+  the two guards.  Three reasons the original cannot be used: its callback takes
+  only a context, so there is nowhere to put the skeleton; it is
+  `comb_conv (conv ctxt)', which gives the function part and the argument part the
+  SAME conversion, where the two halves need DIFFERENT skeletons; and the descent
+  must contract a beta redex BEFORE descending, charged against the guards -- which
+  live inside `bottom_fixpoint_gen_conv', so they have to be threaded in as an
+  argument (`(bef, aft)' below), or the two layers diverge at different moments.
 
   Two things kept from the original that a reviewer should check first: NO case
   analysis on the shape of the term (the three branches are "application",
@@ -741,7 +744,7 @@ fun make_guard opts ctxt0 t0 =
   never run -- the redex would be descended into instead of contracted first, and
   the call-by-name property (a discarded divergent argument terminates) would be
   silently lost.  After the contraction the result is re-scanned under `skel0',
-  mirroring more_pattern.ML:73-75.
+  mirroring more_pattern.ML:73-75 in rewrite_term_mode.
 
   Fed `skel0' and inert guards this degenerates to `Conv.sub_conv' plus eager
   beta contraction.*)
@@ -833,7 +836,8 @@ fun bottom_fixpoint_gen_conv mode opts (step: Proof.context -> skel_conv) ctxt0 
 
     (*the step position: a redex the descent's reassembly has just built (a rule
       rewrote the function part to an abstraction) is contracted as one accounted
-      step, `skel0' so the result is re-scanned -- more_pattern.ML:67's counterpart*)
+      step, `skel0' so the result is re-scanned -- the counterpart of
+      more_pattern.ML:67 in rewrite_term_mode*)
     fun step_at ctxt ct1 =
       (case Thm.term_of ct1 of
          Abs _ $ _ =>
@@ -946,12 +950,12 @@ fun bottom_fixpoint_gen_term mode opts (step: Proof.context -> skel_term) ctxt0 
             | NONE => NONE))
 
     (*the term-level `sub_conv_skel'; its first clause is the descent-position beta
-      of more_pattern.ML:73-75 -- contract, then re-scan the contraction under
-      `skel0', and never descend into a redex's own subterms (call-by-name).
-      Going under a binder PUSHES it onto `bvs' and leaves the body untouched:
-      nothing is opened, nothing is re-abstracted, so there is no fresh name to
-      clash and nothing a rule-supplied binder could capture (the substituter
-      lifts by landing depth).*)
+      of more_pattern.ML:73-75 in rewrite_term_mode -- contract, then re-scan the
+      contraction under `skel0', and never descend into a redex's own subterms
+      (call-by-name).  Going under a binder PUSHES it onto `bvs' and leaves the body
+      untouched: nothing is opened, nothing is re-abstracted, so there is no fresh
+      name to clash and nothing a rule-supplied binder could capture (the
+      substituter lifts by landing depth).*)
     and sub _ bvs (t1 as Abs (_, _, body) $ u) =
           (before_step t1;
            let val t2 = Term.subst_bound (u, body); val _ = after_step (t1, t2)

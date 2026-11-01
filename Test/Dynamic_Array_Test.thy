@@ -291,9 +291,9 @@ local
   val _ = time "unsafe_sub x n" (fn () => let fun go i s = if i < n then go (i + 1) (count (unsafe_sub (d, i)) s) else s in go 0 0 end)
   val _ = time "Array.sub x n" (fn () => let fun go i s = if i < n then go (i + 1) (count (Array.sub (a, i)) s) else s in go 0 0 end)
   val _ = time "fold" (fn () => fold count d 0)
-  val _ = time "Array.fold" (fn () => Array.fold count a 0)
+  val _ = time \<^unchecked_name>\<open>Array.fold\<close> (fn () => Array.fold count a 0)
   val _ = time "app" (fn () => app (fn _ => ()) d)
-  val _ = time "Array.app" (fn () => Array.app (fn _ => ()) a)
+  val _ = time \<^unchecked_name>\<open>Array.app\<close> (fn () => Array.app (fn _ => ()) a)
   val small = make [1, 2, 3, 4]
   val _ = time "fold over 4 elements x 1e6" (fn () => let fun go i s = if i < 1000000 then go (i + 1) (fold count small s) else s in go 0 0 end)
   val _ = time "copy + pop x n" (fn () => let val c = copy d; fun go () = if is_empty c then () else (pop c; go ()) in go () end)

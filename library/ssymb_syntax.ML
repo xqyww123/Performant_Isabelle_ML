@@ -9,11 +9,11 @@ fun dest_synt_numeral (Const (\<^const_syntax>\<open>zero_class.zero\<close>, _)
 
 local
 
-val numT = Type ("Num.num", []);
+val numT = Type (\<^type_name>\<open>num\<close>, []);
 
-val one_const = Const ("Num.num.One", numT)
-and bit0_const = Const ("Num.num.Bit0", numT --> numT)
-and bit1_const = Const ("Num.num.Bit1", numT --> numT)
+val one_const = Const (\<^const_name>\<open>num.One\<close>, numT)
+and bit0_const = Const (\<^const_name>\<open>num.Bit0\<close>, numT --> numT)
+and bit1_const = Const (\<^const_name>\<open>num.Bit1\<close>, numT --> numT)
 
 in
 fun mk_numeral_nat 0 = \<^term>\<open>0::nat\<close>

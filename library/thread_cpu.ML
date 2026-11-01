@@ -4,11 +4,11 @@
 The CPU clock of one thread, a measurement in it, and a timeout charged in it.
 
 WHY.  Timing.result's cpu is getrusage(RUSAGE_SELF): the whole process, all
-workers at once (polyml timing.cpp:468).  A single-threaded computation
-running beside other workers cannot be metered by it, and wall clock charges
-it for the machine's load and for everybody's garbage collections: Poly/ML's
-GC stops the world, and a thread that allocated nothing lost 657 ms of 910 ms
-wall to other threads' GCs, none of it on its own CPU clock (measured;
+workers at once (polyml timing.cpp:468 in PolyTimingGetUser).  A single-threaded
+computation running beside other workers cannot be metered by it, and wall clock
+charges it for the machine's load and for everybody's garbage collections:
+Poly/ML's GC stops the world, and a thread that allocated nothing lost 657 ms of
+910 ms wall to other threads' GCs, none of it on its own CPU clock (measured;
 ai-artifacts/THREAD_CPU_MEASUREMENTS.md holds every figure cited here).  The
 operating system keeps a CPU clock per thread; this module reads it.
 
@@ -24,50 +24,44 @@ The library is libperformant_isabelle_ml, found under
 library/native/<platform>/ next to this file, where <platform> is ML_PLATFORM
 with a compact-object "_32" stripped from the architecture: Isabelle's stock
 default is ML_system_64 = false, so ML_PLATFORM is then x86_64_32-linux while
-the directory is x86_64-linux (this machine runs ML_system_64 = true and
-reports x86_64-linux directly).  Build it once per machine with
+the directory is x86_64-linux.  Build it once per machine with
 library/native/build <platform> (the conda package ships all five prebuilt;
 library/native/README has the details).  It is loaded lazily on first use,
 so a heap builds without it.
 
-WITHOUT A CLOCK -- no library, or the operating system refusing this thread
-one -- `self' is NONE, a measurement reports no thread CPU, and `apply', if a
-CPU limit was asked for at all, enforces only its wall-clock limit (with a
-warning) or raises an error when it was given none.  Whether the clock is
-there is asked of the loader on every `self': the dlopen handle and symbol
-addresses are memoised in volatile refs that Poly/ML resets on heap load
-(ForeignMemory.sml:127-135), and a memo of our own would survive in a heap
-built on a machine without the library and misreport every machine with it.
+WITHOUT A CLOCK -- no library, or the operating system refusing this thread one
+-- `self' is NONE, a measurement reports no thread CPU, and `apply', if a CPU
+limit was asked for at all, enforces only its wall-clock limit (with a warning)
+or raises an error when it was given none.  Whether the clock is there is asked
+of the loader on every `self': the dlopen handle and symbol addresses are
+memoised in volatile refs that Poly/ML resets on heap load
+(ForeignMemory.sml:127-135 in memoise), and a memo of our own would survive in a
+heap built on a machine without the library and misreport every machine with it.
 A failed attempt costs one failing dlopen.
-
-Foreign itself is hidden by Pure; library/rescue_foreign.ML puts it back and
-must precede this file.  Compiled code holds values, not names, so a heap built
-from this file works in any later process whether or not the name is bound
-there (Isabelle's own SHA1 rests on the same fact, sha1.ML:150-177).
 
 THE TIMEOUT.  `apply {thread_cpu, wall} f x' runs f x under two limits: it
 raises Timeout.TIMEOUT once the calling thread has spent `thread_cpu' of CPU
-inside it, and -- when `wall' is given -- once `wall' of wall clock has
-passed, whichever comes first.  The wall limit is the outer of the two and is
+inside it, and -- when `wall' is given -- once `wall' of wall clock has passed,
+whichever comes first.  The wall limit is the outer of the two and is
 Timeout.apply itself (the accounted one, library/accounted_timeout.ML, which
-precedes this file); it exists for liveness, since a thread that blocks -- on
-an external prover, a lock, a remote call -- accrues no CPU and would never
-reach a CPU limit.  The CPU limit has the shape of Timeout.apply
-(timeout.ML:34-56) with Event_Timer replaced by a manager of our own.
-Event_Timer cannot serve: its event runs inside Event_Timer's own lock, so it
-cannot re-arm itself, and a CPU deadline can only be approached by repeated
-wall-clock waits.  The manager waits for the smallest time remaining among
-the registrations -- a thread never accrues more CPU than wall time (except
-on Windows, where the tick-based clock can credit a thread a whole 15.625 ms
-tick it did not fully run), so that wait never runs past a deadline --
-re-reads every clock, fires what is due, and waits again.  Each wait is at
-least poll_floor (1 ms) so a starved thread does not turn the manager into a
-spinner; a limit therefore overshoots by at most poll_floor plus scheduling
-latency, plus one tick on Windows (measured on idle Linux machines: 22 us to
-1.8 ms of CPU beyond a 20 ms limit, over 20 samples).  One manager thread
-serves every registration; it is forked on demand and lives on, exactly as
-Event_Timer's does, and like Event_Timer's it is revived by the next register
-or cancel if found dead (after a heap reload, say).
+precedes this file); it exists for liveness, since a thread that blocks -- on an
+external prover, a lock, a remote call -- accrues no CPU and would never reach a
+CPU limit.  The CPU limit has the shape of Timeout.apply (timeout.ML:34-56 in
+apply') with Event_Timer replaced by a manager of our own.  Event_Timer cannot
+serve: its event runs inside Event_Timer's own lock, so it cannot re-arm itself,
+and a CPU deadline can only be approached by repeated wall-clock waits.  The
+manager waits for the smallest time remaining among the registrations -- a
+thread never accrues more CPU than wall time (except on Windows, where the
+tick-based clock can credit a thread a whole 15.625 ms tick it did not fully
+run), so that wait never runs past a deadline -- re-reads every clock, fires
+what is due, and waits again.  Each wait is at least poll_floor (1 ms) so a
+starved thread does not turn the manager into a spinner; a limit therefore
+overshoots by at most poll_floor plus scheduling latency, plus one tick on
+Windows (measured on idle Linux machines: 22 us to 1.8 ms of CPU beyond a 20 ms
+limit, over 20 samples).  One manager thread serves every registration; it is
+forked on demand and lives on, exactly as Event_Timer's does, and like
+Event_Timer's it is revived by the next register or cancel if found dead (after
+a heap reload, say).
 
 Firing is Isabelle_Thread.interrupt_thread on the registered thread, and the
 outcome is judged as Timeout.apply judges it: TIMEOUT iff the registration
@@ -124,17 +118,17 @@ sig
   val cpu_timing: ('a -> 'b) -> 'a -> Time.time option * 'b
 
   (* Run f x; raise Timeout.TIMEOUT once the calling thread has spent
-     `thread_cpu' of CPU inside it, or once `wall' has elapsed when given.
-     Only this thread's CPU counts: work in Future/Par_List is invisible and
-     a blocked thread never reaches the limit -- give `wall' where liveness
+     `thread_cpu' of CPU inside it, or once `wall' has elapsed when given.  Only
+     this thread's CPU counts: work in Future/Par_List is invisible and a
+     blocked thread never reaches the limit -- give `wall' where liveness
      matters.  As in Timeout.apply, a limit under 1 ms is ignored
      (Timeout.ignored) and timeout_scale scales both.  Without a clock only
-     `wall' is enforced, with a warning on every call, or an error when there
-     is no `wall' either; an ignored `thread_cpu' never consults the clock.
-     Either limit raises Timeout.TIMEOUT -- carrying CPU spent, or wall
-     elapsed -- and when both deadlines nearly coincide the outer wall limit
-     may claim the inner one's unwinding (Timeout.apply's own nesting
-     behaviour, timeout.ML:47-55). *)
+     `wall' is enforced, with a warning on every call, or an error when there is
+     no `wall' either; an ignored `thread_cpu' never consults the clock.  Either
+     limit raises Timeout.TIMEOUT -- carrying CPU spent, or wall elapsed -- and
+     when both deadlines nearly coincide the outer wall limit may claim the
+     inner one's unwinding (Timeout.apply's own nesting behaviour,
+     timeout.ML:47-55 in apply'). *)
   val apply: {thread_cpu: Time.time, wall: Time.time option} -> ('a -> 'b) -> 'a -> 'b
 end
 
@@ -155,14 +149,14 @@ local
 
   val path =
     Resources.master_directory \<^theory> + Path.make ["library", "native", platform,
-      if ML_System.platform_is_windows then "performant_isabelle_ml.dll"
-      else "libperformant_isabelle_ml.so"]
+      if ML_System.platform_is_windows then \<^unchecked_name>\<open>performant_isabelle_ml.dll\<close>
+      else \<^unchecked_name>\<open>libperformant_isabelle_ml.so\<close>]
 
   val library = loadLibraryIndirect (fn () => File.platform_path path)
 
-  (*the handler sits on the calls, as sha1.ML:193-195 puts it: the library and
-    its symbols are memoised thunks and resolve at the first call.  A load
-    failure names the path tried, so it is not repeated here*)
+  (*the handler sits on the calls: the library and its symbols are memoised
+    thunks and resolve at the first call.  A load failure names the path
+    tried, so it is not repeated here*)
   fun explain call x =
     call x handle Foreign.Foreign msg =>
       error (msg ^ "\nbuild it on this machine with library/native/build " ^ platform)
@@ -258,7 +252,8 @@ datatype state =
   State of {registrations: registration Inttab.table, manager: Isabelle_Thread.T option}
 
 val state =
-  Synchronized.var "Thread_CPU.state" (State {registrations = Inttab.empty, manager = NONE})
+  Synchronized.var \<^unchecked_name>\<open>Thread_CPU.state\<close>
+    (State {registrations = Inttab.empty, manager = NONE})
 
 (*nanoseconds remaining; 0 when due, and when the thread is gone*)
 fun remaining ({clock, deadline, ...}: registration) =
@@ -278,10 +273,10 @@ fun wake_time (State {registrations, ...}) =
       Time.now () + Time.fromNanoseconds (Int.max (w, Time.toNanoseconds poll_floor)))
 
 (*fire one due registration, or NONE = nothing due yet.  The interrupt and the
-  entry's removal are ONE critical section of `state' (synchronized.ML:83-86):
-  a thread that finds its registration gone knows its interrupt was already
-  issued, which is what lets `cancel' report "it had fired" and `apply' trust
-  it.  Interrupting outside the lock would break that.*)
+  entry's removal are ONE critical section of `state' (synchronized.ML:73-78 in
+  timed_access): a thread that finds its registration gone knows its interrupt
+  was already issued, which is what lets `cancel' report "it had fired" and
+  `apply' trust it.  Interrupting outside the lock would break that.*)
 fun fire (State {registrations, manager}) =
   (case Inttab.get_first (fn (id, r) => if remaining r = 0 then SOME (id, r) else NONE) registrations of
     NONE => NONE
@@ -292,7 +287,7 @@ fun fire (State {registrations, manager}) =
 fun manager_loop () =
   (Synchronized.timed_access state wake_time fire; manager_loop ())
 
-(*event_timer.ML:130-132,163,170*)
+(*event_timer.ML:130-132 in manager_check, 163 in request, 170 in cancel*)
 fun manager_check manager =
   if is_some manager andalso Isabelle_Thread.is_active (the manager) then manager
   else SOME (Isabelle_Thread.fork (Isabelle_Thread.params "thread_cpu") manager_loop)

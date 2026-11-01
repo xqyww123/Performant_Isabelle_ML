@@ -22,10 +22,10 @@ a memoized value would be saved into session heaps and override a child
 process's own environment.
 
 Write discipline (PLAN 6): no held streams -- one File.append per record,
-serialized by one Synchronized.var per category, which also memoizes the
-(pid, file) pair of PLAN 2.4: session heap images inherit ML values
-(ml_heap.ML:35-36), so the file path must be recomputed when the pid of the
-running process differs from the memoized one.
+serialized by one Synchronized.var per category, which also memoizes the (pid,
+file) pair of PLAN 2.4: session heap images inherit ML values
+(ml_heap.ML:35-36 in save_child), so the file path must be recomputed when the
+pid of the running process differs from the memoized one.
 *)
 
 signature EVENT_LOG = sig
@@ -54,7 +54,8 @@ structure Event_Log : EVENT_LOG = struct
 
 (* configuration *)
 
-val malformed_warned = Synchronized.var "Event_Log.malformed_warned" false
+val malformed_warned =
+  Synchronized.var \<^unchecked_name>\<open>Event_Log.malformed_warned\<close> false
 
 (*a malformed value is off, warned once: log_dir runs outside never_raising (PLAN 2.2)*)
 fun log_dir () =
@@ -146,7 +147,7 @@ fun new_file dir name pid =
       "-" ^ string_of_int pid ^ ".xml"
   in Path.append category_dir (Path.basic file_name) end
 
-val warned = Synchronized.var "Event_Log.warned" false
+val warned = Synchronized.var \<^unchecked_name>\<open>Event_Log.warned\<close> false
 
 fun warn_once exn =
   Synchronized.change warned (fn already =>
@@ -175,7 +176,7 @@ fun append_string (Category {name, enabled, state, ...}) make_string =
           let val s = record_marker ^ "\n" ^ filter_control (make_string ()) ^ "\n" in
             Synchronized.change state (fn memo =>
               let
-                val pid = ML_Pid.get ()
+                val pid = PolyML.ml_pid ()
                 val path =
                   (case memo of
                     SOME (pid', path') =>

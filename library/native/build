@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # Build libperformant_isabelle_ml, the native half of Performant_Isabelle_ML,
-# for one target platform, into ./<target>/.  Mirrors Isabelle's own
-# contrib/polyml-*/sha1/build.  The target names are Poly/ML's ML_PLATFORM
+# for one target platform, into ./<target>/.  Modelled on the sha1/build of
+# Isabelle2025-2's Poly/ML component.  The target names are Poly/ML's ML_PLATFORM
 # values with any compact-object "_32" stripped from the architecture;
 # library/thread_cpu.ML computes exactly that name to find the library.
 #

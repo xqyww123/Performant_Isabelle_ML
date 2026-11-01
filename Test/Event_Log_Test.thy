@@ -68,13 +68,13 @@ ML \<open>
     val record = Exception_Log.default_record
   in
     val _ = assert "success path returns the value"
-      (Exception_Log.capture {site = "Event_Log_Test.ok", record = record}
+      (Exception_Log.capture {site = \<^unchecked_name>\<open>Event_Log_Test.ok\<close>, record = record}
         (fn () => 6 * 7) = 42)
 
     val _ =
       (case Exn.capture0
               (fn () =>
-                Exception_Log.capture {site = "Event_Log_Test.fail", record = record}
+                Exception_Log.capture {site = \<^unchecked_name>\<open>Event_Log_Test.fail\<close>, record = record}
                   middle) () of
         Exn.Exn (Fail msg) => assert "reraised the original Fail" (msg = "boom")
       | _ => error "FAILED: expected Fail to escape the capture")
@@ -83,9 +83,9 @@ ML \<open>
     val _ =
       (case Exn.capture0
               (fn () =>
-                Exception_Log.capture {site = "Event_Log_Test.outer", record = record}
+                Exception_Log.capture {site = \<^unchecked_name>\<open>Event_Log_Test.outer\<close>, record = record}
                   (fn () =>
-                    Exception_Log.capture {site = "Event_Log_Test.inner", record = record}
+                    Exception_Log.capture {site = \<^unchecked_name>\<open>Event_Log_Test.inner\<close>, record = record}
                       middle)) () of
         Exn.Exn (Fail _) => ()
       | _ => error "FAILED: expected Fail to escape the nested captures")
@@ -94,7 +94,7 @@ ML \<open>
     val _ =
       (case Exn.capture0
               (fn () =>
-                Exception_Log.capture {site = "Event_Log_Test.excluded", record = fn _ => false}
+                Exception_Log.capture {site = \<^unchecked_name>\<open>Event_Log_Test.excluded\<close>, record = fn _ => false}
                   (fn () => raise Fail "quiet")) () of
         Exn.Exn (Fail _) => ()
       | _ => error "FAILED: expected Fail to escape the excluded capture")
@@ -106,7 +106,7 @@ section \<open>Corrupt-record injection and one more good record\<close>
 ML \<open>
   val category_dir =
     Path.append (the (Event_Log.log_dir ())) (Path.basic "event_log_test")
-  val pid_suffix = "-" ^ string_of_int (ML_Pid.get ()) ^ ".xml"
+  val pid_suffix = "-" ^ string_of_int (PolyML.ml_pid ()) ^ ".xml"
   val log_file =
     (case List.filter (String.isSuffix pid_suffix) (File.read_dir category_dir) of
       [name] => Path.append category_dir (Path.basic name)

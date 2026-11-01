@@ -125,10 +125,10 @@ fun typ_match thy TU tyenv = Sign.typ_match thy TU tyenv
 fun escaping fixed_bounds d t =
   filter (fn i => i < d orelse not (fixed_bounds (i - d))) (loose_bnos t);
 
-(*This gate is also the SOLE precondition that makes the negative shifts below
-  safe: an empty result says every loose index in `t' is >= d, so shifting down
-  by d cannot go past zero.  `Term.incr_boundvars' does not check (term.ML:690) --
-  defeat the gate and the store yields terms like `Bound (~1)'.*)
+(*This gate is also the SOLE precondition that makes the negative shifts below safe:
+  an empty result says every loose index in `t' is >= d, so shifting down by d
+  cannot go past zero.  `Term.incr_boundvars' does not check (term.ML:690 in
+  incr_bv_same) -- defeat the gate and the store yields terms like `Bound (~1)'.*)
 
 (* First Order Match *)
 (*Improved from the system first_order_match, by allowing loose bounds in the object term,
@@ -305,10 +305,10 @@ fun find_matching_subterms thy bvs pat obj =
 
 (* substitution that respects the numbering above *)
 
-(*`Envir.subst_term2' (envir.ML:358-373) with a depth counter threaded through the
-  `Abs' arc; the counter and the `incr_boundvars lev' are `prf_subst' in
-  Pure/proofterm.ML:1429-1442, which does the same for proof terms.  Upstream needs
-  neither because a binding it stores is always closed.*)
+(*`Envir.subst_term2' (envir.ML:358-373 in subst_term2) with a depth counter
+  threaded through the `Abs' arc; the counter and the `incr_boundvars lev' are
+  those of Pure/proofterm.ML:1432-1445 in prf_subst, which does the same for proof
+  terms.  Upstream needs neither because a binding it stores is always closed.*)
 fun subst_term_same (tyenv, tenv) =
   let
     val substT = Envir.subst_type_same tyenv;

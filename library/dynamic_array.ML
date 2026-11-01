@@ -145,7 +145,8 @@ fun grow (Dynamic_Array {hint, len, arr}) n x =
   let
     val a = !arr
     val cap = Array.length a
-    (*n itself is never capped, only the size chosen for it: Poly/ML refuses length >= maxLen (basis/Array.sml:70)*)
+    (*n itself is never capped, only the size chosen for it: Poly/ML refuses
+      length >= maxLen (basis/Array.sml:70 in array)*)
     val cap' = Int.max (n, Int.min (Array.maxLen - 1, if cap = 0 then !hint else 2 * cap))
     val a' = Array.array (cap', x)   (*n >= Array.maxLen raises Size here*)
   in move_prefix a (!len) a'; arr := a' end

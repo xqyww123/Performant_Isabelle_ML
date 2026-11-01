@@ -230,7 +230,8 @@ structure ThmName_Hash =
    equality, NOT aconv: hash_term hashes Abs bound-variable names, so term128 is
    not alpha-invariant, and (op =) is the precise equality term128 respects. *)
 val thm128_cache : (term * digest128) ThmName_Hash.table Synchronized.var =
-  Synchronized.var "Hasher.thm128_cache" (ThmName_Hash.empty 1024)
+  Synchronized.var \<^unchecked_name>\<open>Hasher.thm128_cache\<close>
+    (ThmName_Hash.empty 1024)
 
 fun thm128 thm =
   if not (Thm.has_name_hint thm) then term128 (Thm.prop_of thm)

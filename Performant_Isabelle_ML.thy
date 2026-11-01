@@ -2,21 +2,23 @@ theory Performant_Isabelle_ML
   imports Pure
 begin
 
-(* First: Poly/ML's Foreign is bound again in the global ML name space (see the file).
-   Its own compilation unit, ahead of every ML that names Foreign. *)
-ML_file \<open>library/rescue_foreign.ML\<close>
-
 (* From here on, Timeout.apply is the accounted version (see the file). *)
 ML_file \<open>library/accounted_timeout.ML\<close>
 
 (* Per-thread CPU clocks, a measurement in them, and Thread_CPU.apply, a
-   timeout charged in them; needs Foreign (above) and Interrupt_Family
-   (accounted_timeout.ML).  The native library (library/native/build
-   <platform>, once per machine) is loaded lazily and optional: without it
-   there is no clock. *)
+   timeout charged in them; needs Interrupt_Family (accounted_timeout.ML).
+   The native library (library/native/build <platform>, once per machine) is
+   loaded lazily and optional: without it there is no clock. *)
 ML_file \<open>library/thread_cpu.ML\<close>
 
+(* improved_net.ML takes no ML antiquotations: the fast_abbrev_printing feature loads
+   a copy of it inside Pure, before antiquotations exist.  So its "Pure.type" literals
+   stay plain strings. *)
+context notes [[ML_check_strings = false]]
+begin
 ML_file \<open>library/improved_net.ML\<close>
+end
+
 ML_file \<open>library/inet_collection.ML\<close>
 ML_file \<open>library/pattern.ML\<close>
 ML_file \<open>library/merely_rewrite.ML\<close>

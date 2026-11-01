@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Requires Isabelle2026 (conda: `isabelle >=2026,<2026.1`).
+- `library/rescue_foreign.ML` is gone: Isabelle2026 no longer hides Poly/ML's
+  `Foreign`, so every session sees it without this library.
+
 ## 0.2.0 (2026-10-03)
 
 - `Thread_CPU`: per-thread CPU clocks, `timing`/`cpu_timing` measuring the

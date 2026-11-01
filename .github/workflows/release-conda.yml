@@ -17,8 +17,8 @@
 # `build` job either (one runner is one architecture), so the `native` job below compiles
 # each on a runner of its own architecture and `build` collects the five artifacts before
 # rattler-build runs.  The package itself stays `noarch: generic`: ONE artifact carrying
-# all five, exactly as Isabelle ships its own libsha1.so, because library/thread_cpu.ML
-# picks the directory for the RUNNING platform at run time.
+# all five, because library/thread_cpu.ML picks the directory for the RUNNING platform at
+# run time.
 name: release-conda
 
 on:

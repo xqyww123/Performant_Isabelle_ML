@@ -9,8 +9,7 @@ schema_version: 1
 # Still `noarch: generic`, and deliberately so.  The five libraries live side by side in
 # library/native/<platform>/, and library/thread_cpu.ML resolves <platform> from
 # ML_PLATFORM at run time -- so ONE artifact is correct on every platform, and there is
-# nothing for conda to select between.  Isabelle ships its own libsha1.so exactly like
-# this.  The libraries are compiled by the `native` job of
+# nothing for conda to select between.  The libraries are compiled by the `native` job of
 # .github/workflows/release-conda.yml, each on a runner of its own architecture, and
 # dropped into library/native/<target>/ before rattler-build is invoked.
 #
@@ -197,19 +196,19 @@ build:
 requirements:
   run:
     # Bounded to the Isabelle SERIES this session is written against.  The base package
-    # keeps a constant name at a per-release version (Isabelle2025-2 -> 2025.2), so
-    # without a bound conda's newest-wins resolution pairs this component with a future
-    # Isabelle it was never built for: it installs cleanly, registers, and then fails in
-    # `isabelle build` on Isabelle/ML API drift.  Bumping this bound is part of porting to
-    # a new series -- the same commit that touches the .thy/.ML sources.
+    # keeps a constant name at a per-release version (Isabelle2026 -> 2026, Isabelle2025-2
+    # -> 2025.2), so without a bound conda's newest-wins resolution pairs this component
+    # with a future Isabelle it was never built for: it installs cleanly, registers, and
+    # then fails in `isabelle build` on Isabelle/ML API drift.  Bumping this bound is part
+    # of porting to a new series -- the same commit that touches the .thy/.ML sources.
     #
     # Deliberately NOT derived from ISA_COMPONENT_VERSION: that is this COMPONENT's own
     # semver, a different axis entirely.
-    - isabelle >=2025.2,<2025.3
+    - isabelle >=2026,<2026.1
 
 about:
   homepage: https://github.com/xqyww123/Performant_Isabelle_ML
-  summary: "Performant Isabelle/ML: hash tables, the iNet discrimination net, a race engine, accounted and thread-CPU timeouts, and Poly/ML's Foreign"
+  summary: "Performant Isabelle/ML: hash tables, the iNet discrimination net, a race engine, and accounted and thread-CPU timeouts"
   description: |
     The Performant_Isabelle_ML and Performant_Isabelle_HOL sessions, packaged as a
     conda add-on to the `isabelle` distribution.  Ships the sources and the prebuilt

@@ -59,16 +59,16 @@
        blocks the return of the whole race.
    (b) `race` must not be called with interrupts already deferred: the join
        then runs uninterruptibly (`join_results` wraps its waiting in the
-       caller's attributes, future.ML:534-536, and the waits keep deferring),
-       so an enclosing `Timeout.apply` on the caller cannot cut the join
-       short -- the race runs until the racers finish on their own budgets,
-       and the caller's interrupt fires only after `race` returns.  The racer
-       bodies themselves are unaffected: each job installs its own
-       interruptible attributes, fixed at fork time (future.ML:473-475), so
-       loser cancellation and the racers' `Timeout.apply` budgets keep
-       working, and even absorbed cancellation still lands when a job
-       re-enables asynchronous interrupts inside a body executed on the
-       joining thread.
+       caller's attributes, future.ML:538-540 in join_results, and the waits
+       keep deferring), so an enclosing `Timeout.apply` on the caller cannot
+       cut the join short -- the race runs until the racers finish on their own
+       budgets, and the caller's interrupt fires only after `race` returns.
+       The racer bodies themselves are unaffected: each job installs its own
+       interruptible attributes, fixed at fork time (future.ML:477-479 in
+       forks), so loser cancellation and the racers' `Timeout.apply` budgets
+       keep working, and even absorbed cancellation still lands when a job
+       re-enables asynchronous interrupts inside a body executed on the joining
+       thread.
 
    EXCEPTIONS.
 
@@ -83,18 +83,18 @@
      - the group holding the racers is canceled: this racer was cancelled --
        by another racer's claim, or because the whole race is being cancelled
        through an ancestor group -- exit Cancelled;
-     - the interrupt landed on the very thread that called `race` (which, on
-       a worker thread, can be executing a still-queued racer body it picked
-       up while joining, future.ML:510-543): this is the caller's own
-       cancellation, absorbed into a racer; the race is cancelled and the
-       interrupt re-raised after the join;
-     - otherwise the interrupt came from the racer's own nested machinery
-       (e.g. an internal `Future.forked_results` delivering a `Par_Exn` that
-       carries `Exn.Interrupt_Breakdown`): that racer alone exits Cancelled
-       and the race continues.  This attribution is sound because every
-       external cancellation route in Pure either cancels a group before
-       interrupting its threads (future.ML:198,204) or targets the caller's
-       thread directly (timeout.ML:38,43).
+     - the interrupt landed on the very thread that called `race` (which, on a
+       worker thread, can be executing a still-queued racer body it picked up
+       while joining, future.ML:514-547 in join_next, join_loop and
+       join_results): this is the caller's own cancellation, absorbed into a
+       racer; the race is cancelled and the interrupt re-raised after the join;
+     - otherwise the interrupt came from the racer's own nested machinery (e.g.
+       an internal `Future.forked_results` delivering a `Par_Exn` that carries
+       `Exn.Interrupt_Breakdown`): that racer alone exits Cancelled and the
+       race continues.  This attribution is sound because every external
+       cancellation route in Pure either cancels a group before interrupting
+       its threads (future.ML:198 in cancel_now, 204 in cancel_all) or targets
+       the caller's thread directly (timeout.ML:38, 43 in apply').
 
    Three irreducible residuals, all verified against Pure:
      (a) a racer's own internal interrupt that surfaces while the caller is
@@ -127,20 +127,20 @@
 
    GROUPS.
 
-   Two fresh groups are created per race.  The first is a child of the
-   caller's worker group; the engine NEVER cancels it, so after the join it
-   is an honest probe for external cancellation: if it is canceled, the
-   cancellation came from outside (`Task_Queue.cancel_group` mutates only the
-   given group's own status, while `Task_Queue.is_canceled` walks the
-   ancestor chain upward).  The second, its child, holds ALL racers and is
-   what claims and the engine's own cancellations cancel.  All racers are
-   forked in one `Future.forks` call at the caller's task priority (the
-   parentage and priority discipline of `Future.forked_results`); the worker
-   pool schedules them with no concurrency cap.  Called OFF a worker thread,
-   the two groups have no ancestor tie to any task and joining merely awaits
-   the results without executing tasks (future.ML:538-540), so absorbed
-   cancellation is structurally impossible there and an interrupt during the
-   join -- the exception path -- is the only external-cancellation route.
+   Two fresh groups are created per race.  The first is a child of the caller's
+   worker group; the engine NEVER cancels it, so after the join it is an honest
+   probe for external cancellation: if it is canceled, the cancellation came
+   from outside (`Task_Queue.cancel_group` mutates only the given group's own
+   status, while `Task_Queue.is_canceled` walks the ancestor chain upward).
+   The second, its child, holds ALL racers and is what claims and the engine's
+   own cancellations cancel.  All racers are forked in one `Future.forks` call
+   at the caller's task priority (the parentage and priority discipline of
+   `Future.forked_results`); the worker pool schedules them with no concurrency
+   cap.  Called OFF a worker thread, the two groups have no ancestor tie to any
+   task and joining merely awaits the results without executing tasks
+   (future.ML:542-544 in join_results), so absorbed cancellation is
+   structurally impossible there and an interrupt during the join -- the
+   exception path -- is the only external-cancellation route.
 
    UNINTERRUPTIBLE WINDOWS (each is load-bearing):
    - around fork + join dispatch: an interrupt between forking and installing
@@ -213,11 +213,13 @@ fun race_forked (racers: 'a racer list) =
         absorbed into a racer.  Claims are recorded here, not read off the
         futures' results: a claimant targeted by a concurrent cancellation can
         have its returned value displaced by the interrupt that fires when its
-        job's attributes are restored (future.ML:450-452; the displacing raise
-        is thread_attributes.ML:99-101), and the recorded claim is what keeps
-        such a racer's Discarded exit truthful.*)
+        job's attributes are restored (future.ML:452-456 in future_job; the
+        displacing raise is thread_attributes.ML:99-101 in with_attributes),
+        and the recorded claim is what keeps such a racer's Discarded exit
+        truthful.*)
       val state =
-        Synchronized.var "Race.state" (([], false): (int * 'a) list * bool)
+        Synchronized.var \<^unchecked_name>\<open>Race.state\<close>
+          (([], false): (int * 'a) list * bool)
 
       (*Only the body itself runs interruptibly (`run` restores the task's
         normal attributes); classifying the outcome and recording a claim run
@@ -237,7 +239,8 @@ fun race_forked (racers: 'a racer list) =
                 (*a non-interrupt exception is this racer's failure only and
                   must NOT escape the job: all racers share one group, so an
                   escaping exception would reach assign_result
-                  (future.ML:424-436) and cancel the whole field*)
+                  (future.ML:424-437 in assign_result) and cancel the whole
+                  field*)
                 Crashed exn
               else if Task_Queue.is_canceled race_group then
                 (*the race's own machinery cancelled this racer (a claim, or
@@ -260,7 +263,8 @@ fun race_forked (racers: 'a racer list) =
 
       val futures =
         Future.forks
-          {name = "Race.race", group = SOME race_group, deps = [], pri = pri, interrupts = true}
+          {name = \<^unchecked_name>\<open>Race.race\<close>, group = SOME race_group, deps = [],
+            pri = pri, interrupts = true}
           (map_index (fn (i, r) => racer_job i r) racers)
 
       (*join barrier: cancellation makes losers finish promptly, so joining ALL
@@ -280,16 +284,16 @@ fun race_forked (racers: 'a racer list) =
 
       val (claims, externally_cancelled) = Synchronized.value state
 
-      (*External cancellation re-raises even when a racer already claimed:
-        the caller's interrupt was consumed on absorption (Isabelle_Thread's
-        Exn.capture resets the break flag), so an enclosing Timeout.apply
-        would otherwise be silently defeated.  Route one: the never-cancelled
-        parent group is canceled, so an ancestor was cancelled from outside.
-        Route two: a racer recorded the caller's absorbed cancellation.
-        The join barrier already holds here: join_results returned, every
-        racer has terminated.  This check MUST precede building the exits: a
-        cancelled racer's result may have been rewritten by get_result into a
-        Par_Exn over ancestor group status (future.ML:498-506), which can
+      (*External cancellation re-raises even when a racer already claimed: the
+        caller's interrupt was consumed on absorption (Isabelle_Thread's
+        Exn.capture resets the break flag), so an enclosing Timeout.apply would
+        otherwise be silently defeated.  Route one: the never-cancelled parent
+        group is canceled, so an ancestor was cancelled from outside.  Route
+        two: a racer recorded the caller's absorbed cancellation.  The join
+        barrier already holds here: join_results returned, every racer has
+        terminated.  This check MUST precede building the exits: a cancelled
+        racer's result may have been rewritten by get_result into a Par_Exn
+        over ancestor group status (future.ML:502-510 in get_result), which can
         carry an unrelated task's non-interrupt exception -- raising here is
         what keeps that case unreachable below.  Do not reorder.*)
       val _ =
