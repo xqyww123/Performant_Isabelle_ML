@@ -451,14 +451,24 @@ jobs:
         run: |
           set -euo pipefail
           # The run dependency comes from the published channel while the package under
-          # test comes from the local one -- named with it, because by bare name conda
-          # silently installs the published build whenever this one cannot be solved.
+          # test comes from the local one, listed first: with --strict-channel-priority a
+          # name the local channel has is never taken from a later one, so if this build
+          # cannot be solved the create fails instead of silently installing the published
+          # build.  Not the "$CHURL::name" spec: the conda of macos-15-intel's Miniconda
+          # (25.7.0, the last for Intel macOS) misreads it as a channel named after the
+          # directory and fails with a 404 from anaconda.org (measured; local repro too).
           # --override-channels pins the channel list exactly; conda-forge is in it because
           # isabelle run-depends on python from there.
           conda create -y -n v \
             -c "$CHURL" -c https://conda-ci.qiyuan.me -c conda-forge --override-channels \
-            "$CHURL::isabelle-performant-ml"
+            --strict-channel-priority isabelle-performant-ml
           conda list -n v isabelle
+          # ...and the rule above, checked rather than trusted: the installed build's own
+          # record names a file: URL.
+          eval "$(conda shell.bash hook)"; conda activate v
+          grep -q '"url": "file:' "$CONDA_PREFIX"/conda-meta/isabelle-performant-ml-*.json \
+            || { echo "::error::isabelle-performant-ml was not installed from the local channel"; \
+                 grep -h '"url"' "$CONDA_PREFIX"/conda-meta/isabelle-performant-ml-*.json; exit 1; }
 
       - name: "The post-link registered it"
         run: |
