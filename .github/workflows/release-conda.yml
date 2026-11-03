@@ -60,8 +60,8 @@ jobs:
   # POSIX and cannot run on x86_64-windows, where the script instead checks statically
   # that the DLL is a 64-bit PE exporting the three tc_* entry points -- not that they
   # return correct times; Windows clock behaviour rests on the measurements in
-  # ai-artifacts/THREAD_CPU_MEASUREMENTS.md.  The `verify` job below then loads the
-  # Windows DLL from ML as well.
+  # ai-artifacts/THREAD_CPU_MEASUREMENTS.md.  The `verify` job below then loads every
+  # platform's library from ML as well, the Windows DLL included.
   #
   # TARGET is Poly/ML's ML_PLATFORM with any compact-object "_32" stripped from the
   # architecture, which is precisely the directory name library/thread_cpu.ML and
@@ -388,11 +388,12 @@ jobs:
   # release this way (build.yml Job F installs from a file:// channel); this is the
   # component-repo equivalent.
   #
-  # Two legs, the same steps on each: Linux, and Windows, the one platform whose DLL no
-  # self-test of ours can check from ML.  No Windows step may swallow a failure -- no
-  # continue-on-error, no `exit /b 0`, no check that only warns -- because publish needs
-  # BOTH legs.  The Windows idioms are those of Semantic_Embedding's verify job (a
-  # maintained win-64 leg) and of this workflow's smoke job.
+  # One leg per platform the package ships a native library for, the same steps on each:
+  # the `native` job checks the C library on its own, this job checks it from Isabelle/ML
+  # inside the installed package.  The runners are the `native` job's.  No step may
+  # swallow a failure -- no continue-on-error, no `exit /b 0`, no check that only warns --
+  # because publish needs EVERY leg.  The Windows idioms are those of Semantic_Embedding's
+  # verify job (a maintained win-64 leg) and of this workflow's smoke job.
   verify:
     name: "Verify before publishing: install + build the session (${{ matrix.os }})"
     needs: build
@@ -401,7 +402,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest]
     defaults:
       run:
         shell: bash -l {0}

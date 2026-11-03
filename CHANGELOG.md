@@ -16,7 +16,8 @@
   reopened): `Theory.check`, except that the context's own theory is found even while
   unfinished.  It replaces Isabelle_RPC's `Theory_Hash.resolve_theory`.
 - The native library's self-test runs on all five targets, Windows included
-  (`test_xxhash`), and the release workflow's verify job runs on Windows too.
+  (`test_xxhash`), and the release workflow's verify job runs on all five too, so
+  each platform's library is also called from Isabelle/ML before a release.
 
 ## 0.2.1 (2026-11-02)
 

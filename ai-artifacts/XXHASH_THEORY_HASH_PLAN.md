@@ -399,9 +399,13 @@ formula. Run once during 6.2: its Main value must equal the live RPC path's.
 - Report to the owner when done: other git checkouts (cslh19's shared one, the MBZUAI fleet) need
   library/native/build and an Isabelle restart when next pulled -- the owner's operational call; until
   then some entity lookups there return entries without keys, next to the loud ERROR elsewhere (4.3).
-- Download counter (conda session's rule, notified 2026-11-02): pause before every run that downloads from
-  the channel (SKILL conda-release section 4), but do NOT resume it (skip that step of section 10); the
-  conda session resumes it after all releases. Until it announces the switch to conda-ci.qiyuan.me.
+- Download counter: SUPERSEDED 2026-11-03 (conda session, owner-ordered; isabelle-packaging-ci 3bd69c1):
+  no pause and no resume any more -- download-counter.py has neither. Before a release, re-read SKILL
+  conda-release sections 4 and 10: section 4 is now "check where the workflows download from"
+  (`python3 ~/Current/MLML/contrib/isabelle-packaging-ci/scripts/download-counter.py check <checkout>`,
+  must print nothing). Never re-run a run started before a repository's conversion commit, nor dispatch
+  on a tag older than it (Isabelle_RPC 380435a, Performant_Isabelle_ML 1c2f184, publish-conda.yml
+  isabelle-packaging-ci d2fb987); start a new run (else report it, SKILL section 10).
 - Release order (on the owner's order, SKILL conda-release): performant-ml, then isabelle-rpc (floor on
   the new performant-ml), then Semantic_Embedding when it is released for Isabelle2026. Version numbers
   are the owner's. Facts for that choice (conda.qiyuan.me, 2026-11-02): no Isabelle2026 build of
@@ -552,7 +556,28 @@ on the rest "不需要跟我讨论的我不予置评" -> all fixes applied (K1-K
   of my commit (both -c conda.qiyuan.me in verify -> conda-ci, plus step/job names): tell it when my
   commit is pushed. A dry run on a commit before that conversion cannot be reused: dry-run the latest
   commit after it. Until the conda session announces the switch, pause the counter as before.
-- Commit drafts shown to the owner; awaiting approval. Also asked: a GitHub dry run of
+- Commit drafts approved ("批准"); dry run approved ("按你建议来": after the conda session's conversion
+  commit, on the latest commit). COMMITTED: Performant_Isabelle_ML 86f052f (pushed origin main);
+  MLML 9556a1be pointer bump, pushed with the owner's consent ("同意") together with two other
+  sessions' unpushed commits (e52a4bad conda-ci bumps, 02da5fac MCP SDK 2 phase C).
+  The plan file was committed inside 86f052f, so this paragraph and later ones are uncommitted.
+- Dry run (owner-approved), 2026-11-03: counter paused (until 16:08 UTC; not resumed, per the conda
+  session's rule); run 41616748026, workflow_dispatch on main at 1c2f184 (the conda session's conda-ci
+  commit on top of 86f052f): ALL GREEN. native: all five targets ran test_xxhash on real runners and
+  passed (directory errno 21 on Linux/macOS, 13 on Windows), test_thread_cpu passed on the four POSIX
+  targets, Windows static export check passed. verify: ubuntu-latest (3m17s) and windows-latest (6m00s)
+  both installed the local package, built Performant_Isabelle_ML and Performant_Isabelle_HOL, and
+  built Check_Native (all of Test/xxhash_checks.ML -- digests, the file digest, the golden hashes of
+  Pure, ML_Bootstrap, Pure.Sessions, Main -- and the Thread_CPU read); the control session failed as
+  it must on both. publish and smoke skipped (dry run). Not covered: macOS at ML level (verify has no
+  macOS leg).
+- Owner, 2026-11-03 ("按你建议来"): verify gets the other three platforms too, so the ML level is
+  checked on all five. Done locally (uncommitted): matrix [ubuntu-latest, ubuntu-24.04-arm,
+  macos-15-intel, macos-15, windows-latest] (the native job's runners); header comments, CHANGELOG and
+  Test/xxhash_checks.ML's header reworded. conda.qiyuan.me has isabelle 2026 for all five subdirs.
+  Testing it needs a commit, a push and a new dry run.
+- Next: Isabelle_RPC commit after isabelle-rpc 0.5.3 (re-run the cslh19 tests with Part 0 first); then
+  step 9 in Semantic_Embedding after its port commit; step 8 (floor) at release time. Also asked: a GitHub dry run of
   performant-ml's release (the only check of the other four platforms; macOS ML level stays unchecked).
 
 ## 10. Separate tasks and pending items

@@ -3,9 +3,9 @@
 
 The one copy of the values that pin XXHash and the theory-hash formula.  Loaded
 (ML_file, so it has no theory header) by Test/XXHash_Test.thy and, in the release
-workflow's verify job, by the check session Check_Native on Linux and on Windows
-against the installed package.  XXHash_Checks.run raises an error on the first
-mismatch.  Needs a process whose heap holds Main.
+workflow's verify job, by the check session Check_Native on each of the five
+platforms against the installed package.  XXHash_Checks.run raises an error on the
+first mismatch.  Needs a process whose heap holds Main.
 
 The theory hashes are golden values over Isabelle2026's stock sources.  A mismatch
 on an unchanged Isabelle means the formula of library/theory_hash.ML's header
