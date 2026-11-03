@@ -7,9 +7,10 @@ schema_version: 1
 # libperformant_isabelle_ml, prebuilt for all five supported platforms.
 #
 # Still `noarch: generic`, and deliberately so.  The five libraries live side by side in
-# library/native/<platform>/, and library/thread_cpu.ML resolves <platform> from
-# ML_PLATFORM at run time -- so ONE artifact is correct on every platform, and there is
-# nothing for conda to select between.  The libraries are compiled by the `native` job of
+# library/native/<platform>/, and library/thread_cpu.ML and library/xxhash.ML resolve
+# <platform> from ML_PLATFORM at run time -- so ONE artifact is correct on every platform,
+# and there is nothing for conda to select between.  The libraries are compiled by the
+# `native` job of
 # .github/workflows/release-conda.yml, each on a runner of its own architecture, and
 # dropped into library/native/<target>/ before rattler-build is invoked.
 #
@@ -74,9 +75,11 @@ build:
       # filtered the source copy; `use_gitignore: false` (see `source:` above) now lets
       # vim swap files through as well when the recipe is built from a working tree.
       find "$dest" \( -name '*~' -o -name '*.swp' -o -name '*.swo' \) -delete
-      # Residue of an aborted library/native/build (the same three patterns .gitignore
-      # names, path-anchored so nothing legitimate can match).
-      rm -f "$dest"/library/native/*.o "$dest"/library/native/*.staged* "$dest"/library/native/test_thread_cpu
+      # Residue of an aborted library/native/build (the same patterns .gitignore names,
+      # path-anchored so nothing legitimate can match; the test binaries by exact name --
+      # a test_xxhash* glob would also match the source test_xxhash.c).
+      rm -f "$dest"/library/native/*.o "$dest"/library/native/*.staged* "$dest"/library/native/test_thread_cpu \
+            "$dest"/library/native/test_xxhash "$dest"/library/native/test_xxhash.exe
 
       test -f "$dest/ROOT"                     # a valid component has a ROOT
 
@@ -89,13 +92,15 @@ build:
       # This check is the reason a binary-less package cannot exist.  Everything that
       # could drop them -- `use_gitignore` reverting to its default, a renamed target,
       # a `native` leg quietly removed from the matrix -- fails here instead of
-      # surfacing at a user's first Thread_CPU call as a missing clock and advice to
-      # build a library the package already ships.
+      # surfacing at a user's first Thread_CPU call as a missing clock, or at the first
+      # persistent theory hash as an ERROR, with advice to build a library the package
+      # already ships.
       #
       # The target names are Poly/ML's ML_PLATFORM with any compact-object "_32"
-      # stripped from the architecture; library/thread_cpu.ML computes exactly this
-      # name to choose a directory.  macOS keeps the .so suffix -- that is the name
-      # thread_cpu.ML asks for on every non-Windows platform, so it is not a mistake.
+      # stripped from the architecture; library/thread_cpu.ML and library/xxhash.ML each
+      # compute exactly this name to choose a directory.  macOS keeps the .so suffix --
+      # that is the name both ask for on every non-Windows platform, so it is not a
+      # mistake.
       # ---------------------------------------------------------------------------
       missing=0
       for t in arm64-darwin arm64-linux x86_64-darwin x86_64-linux; do
@@ -208,11 +213,11 @@ requirements:
 
 about:
   homepage: https://github.com/xqyww123/Performant_Isabelle_ML
-  summary: "Performant Isabelle/ML: hash tables, the iNet discrimination net, a race engine, and accounted and thread-CPU timeouts"
+  summary: "Performant Isabelle/ML: hash tables, the iNet discrimination net, a race engine, accounted and thread-CPU timeouts, and theory hashes"
   description: |
     The Performant_Isabelle_ML and Performant_Isabelle_HOL sessions, packaged as a
     conda add-on to the `isabelle` distribution.  Ships the sources and the prebuilt
-    thread-CPU shim for every supported platform, and registers itself as an Isabelle
-    component; heaps are built on demand.
+    native library (thread CPU clocks, the xxh128 theory hash) for every supported
+    platform, and registers itself as an Isabelle component; heaps are built on demand.
   license: BSD-3-Clause
   repository: https://github.com/xqyww123/Performant_Isabelle_ML

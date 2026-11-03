@@ -20,8 +20,8 @@
 # `build` job either (one runner is one architecture), so the `native` job below compiles
 # each on a runner of its own architecture and `build` collects the five artifacts before
 # rattler-build runs.  The package itself stays `noarch: generic`: ONE artifact carrying
-# all five, because library/thread_cpu.ML picks the directory for the RUNNING platform at
-# run time.
+# all five, because library/thread_cpu.ML and library/xxhash.ML pick the directory for the
+# RUNNING platform at run time.
 name: release-conda
 
 on:
@@ -51,22 +51,22 @@ jobs:
   # (see library/native/README), and only then installs it as library/native/TARGET/ --
   # libperformant_isabelle_ml.so everywhere, performant_isabelle_ml.dll on Windows.
   # (The .so suffix on macOS is deliberate, not an oversight: library/thread_cpu.ML
-  # asks for that exact name on every non-Windows platform.)
+  # and library/xxhash.ML ask for that exact name on every non-Windows platform.)
   #
-  # THE GATE IS THE SELF-TEST.  The script exits nonzero when it fails and leaves the
+  # THE GATE IS THE SELF-TESTS.  The script exits nonzero when one fails and leaves the
   # installed library untouched, so a broken platform reddens its own leg here rather
-  # than reaching a user.  x86_64-windows is the one exception: the POSIX self-test
-  # cannot run there, so the script checks the staged DLL statically instead -- a
-  # 64-bit PE exporting the three entry points.  That leg therefore proves the staged
-  # file is a 64-bit PE whose export table names the three entry points -- not that it
-  # loads, and not that it returns correct times; nothing in this workflow loads the
-  # Windows DLL.  Windows behaviour is covered by the measurements in
-  # ai-artifacts/THREAD_CPU_MEASUREMENTS.md.
+  # than reaching a user.  test_xxhash loads the staged library (dlopen, LoadLibrary on
+  # Windows) and checks pinned xxh128 digests on all five targets.  test_thread_cpu is
+  # POSIX and cannot run on x86_64-windows, where the script instead checks statically
+  # that the DLL is a 64-bit PE exporting the three tc_* entry points -- not that they
+  # return correct times; Windows clock behaviour rests on the measurements in
+  # ai-artifacts/THREAD_CPU_MEASUREMENTS.md.  The `verify` job below then loads the
+  # Windows DLL from ML as well.
   #
   # TARGET is Poly/ML's ML_PLATFORM with any compact-object "_32" stripped from the
-  # architecture, which is precisely the directory name library/thread_cpu.ML computes
-  # at run time -- so the artifact names here, the directory names in the package, and
-  # the lookup in ML are all the same five strings.
+  # architecture, which is precisely the directory name library/thread_cpu.ML and
+  # library/xxhash.ML compute at run time -- so the artifact names here, the directory
+  # names in the package, and the lookups in ML are all the same five strings.
   # ---------------------------------------------------------------------------------
   native:
     name: "Native library: ${{ matrix.target }}"
@@ -148,7 +148,7 @@ jobs:
           echo "===== installed ====="
           ls -l "library/native/${{ matrix.target }}"
 
-      - name: "The file produced is the one library/thread_cpu.ML will look for"
+      - name: "The file produced is the one library/thread_cpu.ML and library/xxhash.ML will look for"
         run: |
           set -euo pipefail
           case "${{ matrix.target }}" in
@@ -157,8 +157,9 @@ jobs:
           esac
           f="library/native/${{ matrix.target }}/$want"
           [ -f "$f" ] || { echo "::error::$f was not produced"; exit 1; }
-          # The target name is what library/thread_cpu.ML computes from ML_PLATFORM at
-          # run time, so the bytes under it must be for that architecture.
+          # The target name is what library/thread_cpu.ML and library/xxhash.ML compute
+          # from ML_PLATFORM at run time, so the bytes under it must be for that
+          # architecture.
           # library/native/build's check only proves the file is sound HERE; this
           # proves "here" is the architecture the name promises.  Skipped when CC is
           # set, which is how a deliberate cross
@@ -285,8 +286,9 @@ jobs:
           # "you installed the package and it still does not work".  So: hard gate, and
           # list every offender instead of dying on the first.
           #
-          # macOS uses the .so suffix too -- that is what library/thread_cpu.ML asks for
-          # on every non-Windows platform, so the build script never emits a .dylib.
+          # macOS uses the .so suffix too -- that is what library/thread_cpu.ML and
+          # library/xxhash.ML ask for on every non-Windows platform, so the build script
+          # never emits a .dylib.
           missing=0
           for f in \
             library/native/arm64-darwin/libperformant_isabelle_ml.so \
@@ -342,8 +344,8 @@ jobs:
           # shipped payload.  They are gitignored, so the recipe carries
           # `use_gitignore: false` to get them past rattler-build's source copy at all --
           # a setting that is easy to lose in an edit, and whose loss a user's first
-          # `Thread_CPU` call need not report at all: without the library the clock
-          # is simply absent.
+          # `Thread_CPU` call need not report at all (without the library the clock
+          # is simply absent), while every persistent theory hash would then raise.
           for want in \
             share/isabelle-performant-ml/ROOT \
             share/isabelle-performant-ml/Performant_Isabelle_ML.thy \
@@ -385,15 +387,34 @@ jobs:
   # until someone hand-deletes the object from R2.  The base repo already gates its
   # release this way (build.yml Job F installs from a file:// channel); this is the
   # component-repo equivalent.
+  #
+  # Two legs, the same steps on each: Linux, and Windows, the one platform whose DLL no
+  # self-test of ours can check from ML.  No Windows step may swallow a failure -- no
+  # continue-on-error, no `exit /b 0`, no check that only warns -- because publish needs
+  # BOTH legs.  The Windows idioms are those of Semantic_Embedding's verify job (a
+  # maintained win-64 leg) and of this workflow's smoke job.
   verify:
-    name: "Verify before publishing: install + build the session"
+    name: "Verify before publishing: install + build the session (${{ matrix.os }})"
     needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     defaults:
       run:
         shell: bash -l {0}
     steps:
+      # Only for Test/xxhash_checks.ML, the one copy of the values the check below pins;
+      # the code under test is the INSTALLED package.  LF endings, as in the native job.
+      - name: "Check out with LF line endings, not CRLF"
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          path: src
+
       - uses: actions/download-artifact@v4
         with:
           name: conda-packages
@@ -406,72 +427,108 @@ jobs:
       - name: Index the freshly built package into a local channel
         run: |
           set -euo pipefail
-          conda install -y -n base -c conda-forge conda-index -q
           CH="$RUNNER_TEMP/local-channel"
           mkdir -p "$CH/noarch"
           find "$RUNNER_TEMP/pkgs" -name '*.conda' -exec cp {} "$CH/noarch/" \;
-          # $CONDA/bin/python, not bare `python`: setup-miniconda leaves /usr/bin/python
-          # first on PATH, and conda-index was just installed into the BASE env.
-          # publish-conda.yml already spells it this way; these two must agree.
-          "$CONDA/bin/python" -m conda_index "$CH" --no-zst --no-bz2 --channeldata --channel-name local
-          echo "CH=$CH" >> "$GITHUB_ENV"
+          # The base env's interpreter, never bare `python`: setup-miniconda leaves
+          # /usr/bin/python first on PATH.  On Windows Miniconda has no bin/ at all:
+          # %CONDA%\python.exe.
+          if [ "$RUNNER_OS" = Windows ]; then PY="$CONDA/python.exe"; else PY="$CONDA/bin/python"; fi
+          [ -x "$PY" ] || { echo "::error::no conda python at $PY"; ls "$CONDA"; exit 1; }
+          "$PY" -m pip install --quiet conda-index
+          "$PY" -m conda_index "$CH" --no-zst --no-bz2 --channeldata --channel-name local
           ls -l "$CH/noarch/"
+          # On Windows $RUNNER_TEMP is D:\a\_temp, and `file://D:\a\_temp/...` is read as
+          # host `d`: three slashes and forward separators.
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "CHURL=file:///$(printf '%s' "$CH" | tr '\\' '/')" >> "$GITHUB_ENV"
+          else
+            echo "CHURL=file://$CH" >> "$GITHUB_ENV"
+          fi
 
       - name: "Install it -- local channel for US, conda.qiyuan.me for the base isabelle"
         run: |
           set -euo pipefail
-          # Unlike the base repo we have no local `isabelle` artifact to solve against, so
-          # the run dependency comes from the published channel while the package under
+          # The run dependency comes from the published channel while the package under
           # test comes from the local one -- named with it, because by bare name conda
           # silently installs the published build whenever this one cannot be solved.
           # --override-channels pins the channel list exactly; conda-forge is in it because
           # isabelle run-depends on python from there.
           conda create -y -n v \
-            -c "file://$CH" -c https://conda.qiyuan.me -c conda-forge --override-channels \
-            "file://$CH::isabelle-performant-ml"
-          conda activate v
-          conda list isabelle
+            -c "$CHURL" -c https://conda.qiyuan.me -c conda-forge --override-channels \
+            "$CHURL::isabelle-performant-ml"
+          conda list -n v isabelle
 
       - name: "The post-link registered it"
         run: |
           set -euo pipefail
-          conda activate v
-          comp="$(isabelle getenv -b ISABELLE_HOME_USER)/etc/components"
+          eval "$(conda shell.bash hook)"; conda activate v
+          # The ENV entry point, never <prefix>/isa/bin/isabelle (the distribution's unix
+          # launcher, which ships on Windows too).
+          if [ "$RUNNER_OS" = Windows ]; then ISA="$CONDA_PREFIX/Scripts/isabelle.bat"
+          else ISA="$CONDA_PREFIX/bin/isabelle"; fi
+          echo "ISA=$ISA" >> "$GITHUB_ENV"
+          # `isabelle getenv` hands back a Cygwin path on Windows; Git-Bash wants /c/...
+          hu="$("$ISA" getenv -b ISABELLE_HOME_USER)"
+          case "$hu" in /cygdrive/*) hu="/${hu#/cygdrive/}" ;; esac
+          comp="$hu/etc/components"
           cat "$comp"
           grep -q 'isabelle-performant-ml' "$comp" \
             || { echo "::error::post-link did not register the component"; exit 1; }
 
-      - name: "...and the session builds"
+      - name: "...and the sessions build"
         run: |
           set -euo pipefail
-          conda activate v
-          isabelle build -v Performant_Isabelle_ML Performant_Isabelle_HOL
+          eval "$(conda shell.bash hook)"; conda activate v
+          "$ISA" build -v Performant_Isabelle_ML Performant_Isabelle_HOL
 
-      # Building the session proves nothing about the native library: thread_cpu.ML
-      # loads it lazily (Foreign.loadLibraryIndirect), so the path is never resolved
-      # until a Thread_CPU call.  This is the one step in the pipeline that makes such
-      # a call against the INSTALLED component, i.e. the one that checks the identity
-      # everything else assumes -- the directory CI wrote is the one ML looks in.  The
-      # import is session-qualified: a bare name would make Isabelle look for a local
-      # .thy of that name.
-      - name: "...and the shipped native library loads from ML"
+      # Building the sessions proves nothing about the native library: thread_cpu.ML and
+      # xxhash.ML load it lazily (Foreign.loadLibraryIndirect), so the path is never
+      # resolved until a call.  This is the step that makes such calls against the
+      # INSTALLED component: the Thread_CPU read, and Test/xxhash_checks.ML -- XXHash
+      # digests pinned from Python's xxhash (strings, and a file with CR, LF and 0x1A
+      # bytes), and the golden theory hashes of Pure, ML_Bootstrap, Pure.Sessions and
+      # Main, which on each leg cover the bytes of that leg's Isabelle sources.  Each
+      # failure is an `error`, so it fails the build.  Its parent is Performant_Isabelle_HOL
+      # so that Main is in the heap.  The session directory goes to -d as a RELATIVE path:
+      # a native Windows path (D:\a\_temp\...) fails Path.explode; isabelle.bat keeps the
+      # working directory.
+      - name: "...and the shipped native library works from ML"
         run: |
           set -euo pipefail
-          conda activate v
-          chk="$RUNNER_TEMP/chk"; mkdir -p "$chk"
-          printf '%s\n' 'session Check_Native = Performant_Isabelle_ML + theories Check_Native' > "$chk/ROOT"
+          eval "$(conda shell.bash hook)"; conda activate v
+          cd "$RUNNER_TEMP"
+          mkdir -p chk
+          cp "$GITHUB_WORKSPACE/src/Test/xxhash_checks.ML" chk/
+          printf '%s\n' 'session Check_Native = Performant_Isabelle_HOL + theories Check_Native' > chk/ROOT
           printf '%s\n' \
             'theory Check_Native' \
-            '  imports "Performant_Isabelle_ML.Performant_Isabelle_ML"' \
+            '  imports "Performant_Isabelle_HOL.SSymb"' \
             'begin' \
+            'ML_file \<open>xxhash_checks.ML\<close>' \
+            'ML \<open>XXHash_Checks.run ()\<close>' \
             'ML \<open>' \
             '  val clock = Thread_CPU.the_self ();' \
             '  val t = (case Thread_CPU.read clock of SOME t => t | NONE => error "own clock unreadable");' \
             '  val _ = Thread_CPU.free clock;' \
             '  val _ = writeln ("thread CPU read from the shipped library: " ^ Time.toString t)' \
             '\<close>' \
-            'end' > "$chk/Check_Native.thy"
-          isabelle build -d "$chk" -v Check_Native
+            'end' > chk/Check_Native.thy
+          "$ISA" build -d chk -v Check_Native
+          # A control: a check that fails must fail the build.  Without it, a build that
+          # never ran the checks would read as a pass.
+          mkdir -p bad
+          printf '%s\n' 'session Check_Native_Control = Performant_Isabelle_ML + theories Check_Native_Control' > bad/ROOT
+          printf '%s\n' \
+            'theory Check_Native_Control' \
+            '  imports "Performant_Isabelle_ML.Performant_Isabelle_ML"' \
+            'begin' \
+            'ML \<open>error "control"\<close>' \
+            'end' > bad/Check_Native_Control.thy
+          if "$ISA" build -d bad Check_Native_Control > /dev/null 2>&1; then
+            echo "::error::the control passed -- a failing check would not fail this step"
+            exit 1
+          fi
 
   publish:
     needs: verify

@@ -8,7 +8,8 @@ ML_file \<open>library/accounted_timeout.ML\<close>
 (* Per-thread CPU clocks, a measurement in them, and Thread_CPU.apply, a
    timeout charged in them; needs Interrupt_Family (accounted_timeout.ML).
    The native library (library/native/build <platform>, once per machine) is
-   loaded lazily and optional: without it there is no clock. *)
+   loaded lazily: without it there is no clock -- and no persistent theory hash
+   (xxhash.ML below), which needs it. *)
 ML_file \<open>library/thread_cpu.ML\<close>
 
 (* improved_net.ML takes no ML antiquotations: the fast_abbrev_printing feature loads
@@ -27,6 +28,13 @@ ML_file \<open>library/hash_table.ML\<close>
    any session based on Performant_Isabelle_ML can hash terms the way Isabelle_RPC's
    universal keys do; needs the hash tables above. *)
 ML_file \<open>library/term_digest.ML\<close>
+(* Streaming XXH3 128-bit through the native library (no fallback without it). *)
+ML_file \<open>library/xxhash.ML\<close>
+(* Theory.resolve_theory: Theory.check, the context's own unfinished theory included. *)
+ML_file \<open>library/resolve_theory.ML\<close>
+(* Theory_Hash: the 16-byte theory identities that prefix every universal key,
+   moved here from Isabelle_RPC; needs the three files above. *)
+ML_file \<open>library/theory_hash.ML\<close>
 ML_file \<open>library/dynamic_array.ML\<close>
 ML_file \<open>library/term_size.ML\<close>
 ML_file \<open>library/theory_data_with_constructor.ML\<close>

@@ -1,43 +1,60 @@
 libperformant_isabelle_ml -- the native half of Performant_Isabelle_ML
 
 This directory holds the C sources behind those Isabelle/ML modules that need
-the operating system directly.  Today that is one: thread_cpu.c, the
-per-thread CPU clocks read by library/thread_cpu.ML.  Each source file is
-consumed by the ML file of the same name.
+native code.  There are two, each consumed by the ML file of the same name:
+thread_cpu.c, the per-thread CPU clocks read by library/thread_cpu.ML, and
+xxhash.c, the streaming XXH3 128-bit hash of library/xxhash.ML, on which every
+persistent theory hash (library/theory_hash.ML) depends.
+
+xxhash.h is xxHash's own single-header implementation, vendored unmodified:
+  source   https://github.com/Cyan4973/xxHash, tag v0.8.3, file xxhash.h
+  SHA-256  17973c0dc49d9854ca26caa191f0e12f7a424b68858d9a78de3860d959d85e4b
+  license  BSD-2-Clause (the notice is at the head of the file)
+xxhash.c includes it with XXH_INLINE_ALL, so none of its symbols is exported.
 
 Build it once per machine: ./build with no argument lists the supported
-targets; ./build TARGET compiles the library, checks it -- by running the
-self-test against it, or on x86_64-windows, where the POSIX self-test (dlopen,
-pthreads) cannot run, by checking statically that the linked file is a 64-bit
-PE exporting tc_self, tc_read and tc_free -- and only then installs it as
-./TARGET/libperformant_isabelle_ml.so (on Windows
-./TARGET/performant_isabelle_ml.dll).  TARGET is Poly/ML's ML_PLATFORM with
-any "_32" stripped from the architecture, e.g. x86_64-linux for both
-x86_64-linux and x86_64_32-linux.
+targets; ./build TARGET compiles the library, checks it, and only then installs
+it as ./TARGET/libperformant_isabelle_ml.so (on Windows
+./TARGET/performant_isabelle_ml.dll).  The checks: test_xxhash, run against the
+staged library on every target, Windows included (it loads the library with
+dlopen or LoadLibrary, the way Poly/ML will); test_thread_cpu, run on every
+target but x86_64-windows, where it cannot run (it is POSIX: dlopen, pthreads)
+and a static check stands in -- the linked file is a 64-bit PE exporting
+tc_self, tc_read and tc_free.  TARGET is Poly/ML's ML_PLATFORM with any "_32"
+stripped from the architecture, e.g. x86_64-linux for both x86_64-linux and
+x86_64_32-linux.
 
 The built library is deliberately not committed (.gitignore covers ./*/), so a
-git checkout builds it once per machine.  The conda package, by contrast, ships
-it prebuilt: the `native` job of ../../.github/workflows/release-conda.yml runs
-this script for each of the five targets on a GitHub-hosted runner of that
+git checkout builds it once per machine -- and again after a pull that changes
+these sources, followed by a restart of Isabelle: Poly/ML keeps a loaded
+library for the life of the process.  A library built before xxhash.c existed
+reports an undefined symbol xxh128_create.  The conda package, by contrast,
+ships it prebuilt: the `native` job of ../../.github/workflows/release-conda.yml
+runs this script for each of the five targets on a GitHub-hosted runner of that
 architecture at release time, and all five ./TARGET/ directories go into the one
-noarch package -- library/thread_cpu.ML picks the directory for the running
-platform, so a single artifact is correct everywhere.  Getting them past
-rattler-build's source copy needs `use_gitignore: false` in conda/recipe.yaml,
-since .gitignore hides exactly these directories; the recipe asserts all five
-are present, so a package cannot build green without them.  A missing library,
-or one that will not load, leaves Thread_CPU without a clock
-(library/thread_cpu.ML, WITHOUT A CLOCK); the reason it reports names this build
-command.  The prebuilt Linux libraries require glibc 2.34 or newer (Ubuntu
-22.04, Debian 12, RHEL 9), where pthread_getcpuclockid moved into libc; the
-macOS ones are stamped for macOS 11.0 or newer but were measured only on 14 and
-15.  On an older system ./build TARGET produces a local copy with no such
+noarch package -- library/thread_cpu.ML and library/xxhash.ML pick the directory
+for the running platform, so a single artifact is correct everywhere.  Getting
+them past rattler-build's source copy needs `use_gitignore: false` in
+conda/recipe.yaml, since .gitignore hides exactly these directories; the recipe
+asserts all five are present, so a package cannot build green without them.
+
+A missing library, or one that will not load: Thread_CPU has no clock
+(library/thread_cpu.ML, WITHOUT A CLOCK), and every persistent theory hash
+raises an ERROR -- there is no fallback (library/xxhash.ML).  Both name this
+build command.  The prebuilt Linux libraries require glibc 2.34 or newer
+(Ubuntu 22.04, Debian 12, RHEL 9), where pthread_getcpuclockid moved into libc;
+the macOS ones are stamped for macOS 11.0 or newer but were measured only on 14
+and 15.  On an older system ./build TARGET produces a local copy with no such
 requirement.
 
-What has actually been measured, per platform, is recorded in
-../../ai-artifacts/THREAD_CPU_MEASUREMENTS.md; the header of each .c file states the
-contract that follows from it.  The self-test re-measures the part of it that
-a build can regress -- accuracy, a sleeping thread, a cross-thread read, the
-handle after the thread has ended, and (asserted on macOS) that a held handle
-is not reissued to new threads -- on every build except x86_64-windows, where
-nothing executes the library before it ships; Windows behaviour rests on the
-measurements in ../../ai-artifacts/THREAD_CPU_MEASUREMENTS.md section 4 instead.
+What has actually been measured for thread_cpu.c, per platform, is recorded in
+../../ai-artifacts/THREAD_CPU_MEASUREMENTS.md; the header of each .c file states
+the contract that follows from it.  test_thread_cpu re-measures the part of it
+that a build can regress -- accuracy, a sleeping thread, a cross-thread read,
+the handle after the thread has ended, and (asserted on macOS) that a held
+handle is not reissued to new threads -- on every build except x86_64-windows;
+Windows behaviour rests on the measurements in
+../../ai-artifacts/THREAD_CPU_MEASUREMENTS.md section 4 instead.  test_xxhash
+checks digests pinned from Python's xxhash.xxh128 over every XXH3 length class,
+whole and in pieces, and over files (empty, larger than the 64 KiB read block, a
+non-ASCII name), and that a missing file and a directory fail.
