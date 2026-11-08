@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-09)
 
 - `Theory_Hash` moved here from Isabelle_RPC (`library/theory_hash.ML`), all but
   `store_theory_hash`, which stays there as `Theory_Hash_Store.store_theory_hash`;
