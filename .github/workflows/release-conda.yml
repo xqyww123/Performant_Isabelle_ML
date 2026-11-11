@@ -388,9 +388,10 @@ jobs:
   # release this way (build.yml Job F installs from a file:// channel); this is the
   # component-repo equivalent.
   #
-  # One leg per platform the package ships a native library for, the same steps on each:
-  # the `native` job checks the C library on its own, this job checks it from Isabelle/ML
-  # inside the installed package.  The runners are the `native` job's.  No step may
+  # One leg per platform the package ships a native library for, the same steps on each,
+  # except macOS (its runners are too slow; owner, 2026-11-11): the `native` job checks the
+  # C library on its own, this job checks it from Isabelle/ML inside the installed package.
+  # The runners are the `native` job's.  No step may
   # swallow a failure -- no continue-on-error, no `exit /b 0`, no check that only warns --
   # because publish needs EVERY leg.  The Windows idioms are those of Semantic_Embedding's
   # verify job (a maintained win-64 leg) and of this workflow's smoke job.
@@ -402,7 +403,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
     defaults:
       run:
         shell: bash -l {0}
