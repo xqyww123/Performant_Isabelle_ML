@@ -576,7 +576,80 @@ on the rest "不需要跟我讨论的我不予置评" -> all fixes applied (K1-K
   macos-15-intel, macos-15, windows-latest] (the native job's runners); header comments, CHANGELOG and
   Test/xxhash_checks.ML's header reworded. conda.qiyuan.me has isabelle 2026 for all five subdirs.
   Testing it needs a commit, a push and a new dry run.
-- Next: Isabelle_RPC commit after isabelle-rpc 0.5.3 (re-run the cslh19 tests with Part 0 first); then
+  Committed and pushed as 114e500 ("确认，提交，推送"). Dry run 41627681021: native all five green;
+  verify green on ubuntu-latest, ubuntu-24.04-arm, macos-15, windows-latest; macos-15-intel FAILED at
+  the install step: its Miniconda is 25.7.0 (Miniconda3-latest-MacOSX-x86_64 is frozen at
+  2025-08-25; arm64's latest is 26.9.4), and conda 25.7.0 misreads "$CHURL::isabelle-performant-ml"
+  as a channel named "local-channel" -> 404 from anaconda.org. Reproduced locally with conda 25.7.0,
+  with and without the index flags; `name[channel=URL]` fails the same way; `--strict-channel-priority`
+  + the plain name works. (Running the newest Miniconda installer locally was refused by the
+  permission classifier; not worked around.) Fix 22a56ca: strict channel priority + a check that the
+  installed build's conda-meta url is file:. New dry run 41629003733.
+  Note for the owner: Semantic_Embedding's verify uses the same "$CHURL::name" spec on osx-64 and
+  would hit the same failure on its next run (it passed on 2026-10-04).
+  Dry run 41629003733 on 22a56ca: ALL GREEN. native five; verify five (ubuntu-latest 2m03s,
+  ubuntu-24.04-arm 2m00s, macos-15 3m03s, windows-latest 3m26s, macos-15-intel 4m46s), each from the
+  local channel (macos-15-intel: file:///Users/runner/work/_temp/local-channel) through Check_Native.
+  So the ML level is now verified on all five platforms.
+  MLML: 7194ff1a (pointer 1c2f184 -> 22a56ca; my unpushed 70739124 amended) committed locally on top
+  of the conda session's unpushed bbe6bf84; push awaits the owner.
+- MLML pushed with the owner's consent ("可以"): 9556a1be..7194ff1a (incl. the conda session's
+  bbe6bf84). Owner asked me to warn the "semantic embedding 2026" session about the "$CHURL::name"
+  spelling on Intel macOS (done; noted that its 2026-10-04 osx-64 run passed with the same conda
+  25.7.0 and no extra channel, unexplained, so only a risk).
+- The other session started Part 0 (owner confirmed): it overlaps my uncommitted Isabelle_RPC edits in
+  FOUR files -- Tools/context.ML, test/Test_Name_Spaces.thy, .claude/skills/isabelle-rpc/references/
+  {modules.md,registry.md}; it applies patches made against HEAD to the tree and (at commit) the
+  index, then checks that `git diff` of those files shows exactly my edits. Do NOT commit
+  Isabelle_RPC before it reports 0.5.3 out.
+- isabelle-rpc 0.5.3 out (relayed 2026-11-03): Isabelle_RPC master d36907d (Part 0) + 84d278e (VERSION,
+  tag v0.5.3), pushed. A THIRD session's uncommitted PIDE_Loader work is also in Isabelle_RPC's tree
+  (ROOT, Remote_Procedure_Calling.thy, list_theory_hash_app.ML, etc/, lib/isabelle_rpc.jar, src/scala,
+  release-conda.yml, recipe.yaml hunks 0-2, SKILL.md hunk 1, modules.md hunk 2, untracked
+  Tools/pide_loader.ML, src/scala/pide_loader.scala, test/ROOT, test/Test_PIDE_Loader.thy). My side
+  is a patch of my 23 hunks only (scratchpad rpc_mine.diff), applying cleanly to HEAD. Tested on
+  cslh19 (src3/, home3/: git archive HEAD 84d278e + my patch, Performant_Isabelle_ML 22a56ca):
+  Isabelle_RPC + Isabelle_RPC_Test green, 0 legacy, Part 5 of Test_Name_Spaces passes; pytest 13
+  passed. Commit message draft shown to the owner; commit = `git apply --cached` of my patch only.
+- Owner "确认" (2026-11-04): COMMITTED Isabelle_RPC 8aa88f0 (my 23 hunks only, via `git apply --cached`),
+  pushed origin master; the working tree is byte-identical to before (the third session's PIDE_Loader
+  work intact). MLML c9ebdc8b (Isabelle_RPC pointer 84d278e -> 8aa88f0) pushed. Told the
+  "semantic embedding 2026" session (step 9 after its port commit) and "Isa-REPL 2026" (presumed owner
+  of the PIDE_Loader work: HEAD moved, rebase any patch made against 84d278e).
+- Step 9 DONE in the working tree (2026-11-05), uncommitted: Semantic_Embedding port landed (69bb058;
+  Isabelle_RPC 467dca1 comment-only on top of 8aa88f0; MLML 08423ff8). Edits: interpret_command.ML
+  (resolve_root deleted -> Theory.resolve_theory ctxt; Theory_Hash_Store), semantic_interpretation_app.ML
+  (Theory_Hash_Store), semantic_store.ML (Theory.resolve_theory, Theory_Hash_Store, a stale line cite
+  fixed), theory_structure.ML (dead resolve_theory deleted; get_theory_file_path = File.platform_path o
+  Theory_Hash.get_theory_path), Test/Entity_Position_Refusal_Test.thy comment. .gitignore in the tree is
+  someone else's. Tested on cslh19 (se_env/: committed HEADs + my patch, AFP registered, own DB dir):
+  `isabelle build -D Test` -> Semantic_Embedding, _Test, _Test_Cache, _Test_Live_Pass all green; legacy
+  0/1/0/0, the one in Test/Command_At_Position_Test.thy:364 (not mine; told the other session); no
+  warning in my edited lines. Recipe floors left for release time.
+- Owner "批准提交" (2026-11-09): COMMITTED Semantic_Embedding 0ede715 (only the 5 files; staged content
+  checked identical to the tested patch; on top of 872bab2 + 2314e81, neither touching my files),
+  pushed origin master. MLML d9ac2bb6 (pointer 872bab2 -> 0ede715) committed locally on top of
+  another session's unpushed b280aed4 (bicompose_rename_fix); push awaits the owner.
+- RELEASED 2026-11-09 (owner: "可以先发布 isabelle-performant-ml 和 isabelle-rpc"; versions "赞同" 0.3.0 /
+  0.6.0): isabelle-performant-ml 0.3.0 (release commit 2230786, dry run 42511638847, tag v0.3.0, release
+  run 42512348974: publish + smoke green) and isabelle-rpc 0.6.0 (release commit 832f0f7 =
+  VERSION + step 8's floor isabelle-performant-ml >=0.3.0,<0.4.0; dry run 42513702197 whose verify
+  installed performant-ml 0.3.0 from the channel; tag v0.6.0; release run 42514016045: publish + smoke
+  green). conda search lists both as newest. ROLLOUT_STATUS 5f61a99; MLML 76af987c. No download-counter
+  pause/resume (superseded); check printed nothing. Dependents: auto-sledgehammer 0.3.0 caps
+  performant-ml <0.3.0 -> must move before isabelle-minilang for Isabelle2026.
+- conda session, 2026-11-14 (isabelle-packaging-ci 99405ed, owner-approved): publish-conda.yml's Audit
+  step now lists R2 after the push; if a .conda appeared there that the job's pulled copy lacks
+  (another release uploaded meanwhile), it turns red ("uploaded while this job ran, so the index it
+  pushed may lack them"). Remedy: re-run the failed job (always safe). Tell the "conda" session when
+  starting the next release, so it can watch the first real run of the new audit.
+- Remaining: Semantic_Embedding's recipe floors (isabelle-rpc >=0.6.0, performant-ml 0.3.x) at its
+  Isabelle2026 release; auto-sledgehammer's cap; this plan's later paragraphs are uncommitted.
+- (old) Remaining: step 8 (recipe floors of isabelle-rpc and Semantic_Embedding) and the releases, on the
+  owner's order and version numbers.
+- (old) Remaining: step 9 (Semantic_Embedding) after its port commit; step 8 (recipe floor) and the releases
+  (performant-ml, then isabelle-rpc) on the owner's order and version numbers.
+- (old) Next: Isabelle_RPC commit after isabelle-rpc 0.5.3 (re-run the cslh19 tests with Part 0 first); then
   step 9 in Semantic_Embedding after its port commit; step 8 (floor) at release time. Also asked: a GitHub dry run of
   performant-ml's release (the only check of the other four platforms; macOS ML level stays unchecked).
 
