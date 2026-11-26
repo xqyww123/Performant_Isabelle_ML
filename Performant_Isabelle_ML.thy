@@ -41,6 +41,9 @@ ML_file \<open>library/theory_data_with_constructor.ML\<close>
 ML_file \<open>library/event_log.ML\<close>
 ML_file \<open>library/exception_log.ML\<close>
 ML_file \<open>library/race.ML\<close>
+(* Roundtrip_Syntax: a term printed as text that reads back to the same term;
+   needs Interrupt_Family (accounted_timeout.ML). *)
+ML_file \<open>library/roundtrip_syntax.ML\<close>
 
 (* Runtime symbols (Phi_Tool_Symbol): the ML half of HOL/SSymb.thy, here so that
    serializers in Pure-based sessions (Isabelle_RPC) can carry a symbol by its

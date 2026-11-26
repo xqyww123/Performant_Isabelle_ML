@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `Roundtrip_Syntax` (`library/roundtrip_syntax.ML`): a term printed as text that reads
+  back to the same term.  `string_of_term`/`string_of_prop` try the system printer,
+  then `show_types`, then `show_types` with `show_sorts`, then an elaborated syntax
+  (constants by full name, types where a reader needs them, no notation), and return
+  the first text that `read_term`/`read_prop` has read back; these read with the system
+  reader first and a reader of the elaborated syntax second, which also reads hidden
+  names.  Test: `Test/Roundtrip_Syntax_Test.thy`.
+
 ## 0.3.0 (2026-11-09)
 
 - `Theory_Hash` moved here from Isabelle_RPC (`library/theory_hash.ML`), all but
